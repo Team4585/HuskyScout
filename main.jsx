@@ -176,4 +176,12 @@ TEAM ${t?.team || '???'}:
   );
 };
 
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = typeof ReactDOM !== 'undefined' && ReactDOM.createRoot 
+    ? ReactDOM.createRoot(rootElement) 
+    : require('react-dom/client').createRoot(rootElement);
+  root.render(<HuskyScout />);
+}
+
 export default HuskyScout;
