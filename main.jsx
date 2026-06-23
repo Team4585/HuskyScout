@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
 import { QRCodeSVG } from 'qrcode.react';
 
 const cBtn = { width: '40px', height: '40px', borderRadius: '10px', border: '1px solid #334155', backgroundColor: '#1E293B', color: 'white', fontWeight: 'bold' };
@@ -178,10 +179,7 @@ TEAM ${t?.team || '???'}:
 
 const rootElement = document.getElementById('root');
 if (rootElement) {
-  const root = typeof ReactDOM !== 'undefined' && ReactDOM.createRoot 
-    ? ReactDOM.createRoot(rootElement) 
-    : require('react-dom/client').createRoot(rootElement);
-  root.render(<HuskyScout />);
+  ReactDOM.createRoot(rootElement).render(<HuskyScout />);
 }
 
 export default HuskyScout;
