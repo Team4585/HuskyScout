@@ -1,6 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 
+const cBtn = { width: '40px', height: '40px', borderRadius: '10px', border: '1px solid #334155', backgroundColor: '#1E293B', color: 'white', fontWeight: 'bold' };
+const cInput = { width: '45px', backgroundColor: 'transparent', border: 'none', color: 'white', textAlign: 'center', fontSize: '18px', fontWeight: '800', outline: 'none' };
+
+const Counter = ({ theme, label, value, onUpdate }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+    <span style={{ fontSize: '14px', fontWeight: '600' }}>{label}</span>
+    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <button type="button" onClick={() => onUpdate(Math.max(0, value - 1))} style={cBtn}>-</button>
+      <input type="number" value={value} onChange={(e) => onUpdate(parseInt(e.target.value) || 0)} style={cInput} />
+      <button type="button" onClick={() => onUpdate(value + 1)} style={{ ...cBtn, backgroundColor: theme.green, color: '#000', border: 'none' }}>+</button>
+    </div>
+  </div>
+);
+
 const HuskyScout = () => {
   const emptyTeam = { 
     team: '', drivetrain: 'Swerve', mechanism: 'Elevator', 
@@ -30,21 +44,17 @@ const HuskyScout = () => {
 
   const addTeamSlot = () => setTeamsInMatch([...teamsInMatch, { ...emptyTeam }]);
 
-  // --- SMART OVERRIDE LOGIC ---
   const saveToHistory = () => {
     const sessionRecord = { ...matchMetadata, teams: teamsInMatch, timestamp: new Date().toLocaleTimeString() };
     
     setHistory(prevHistory => {
-      // Check if match number already exists in history
       const exists = prevHistory.findIndex(m => String(m.match) === String(matchMetadata.match));
       
       let updatedHistory;
       if (exists !== -1) {
-        // Match exists! Overwrite it with the newest entry
         updatedHistory = [...prevHistory];
         updatedHistory[exists] = sessionRecord;
       } else {
-        // New match! Append it to the list
         updatedHistory = [...prevHistory, sessionRecord];
       }
       
@@ -52,7 +62,6 @@ const HuskyScout = () => {
       return updatedHistory;
     });
     
-    // Clean up
     setTeamsInMatch([{ ...emptyTeam }]);
     setMatchMetadata({ ...matchMetadata, match: '' });
     setShowQR(false);
@@ -93,7 +102,6 @@ TEAM ${t?.team || '???'}:
 
       <main style={{ maxWidth: '500px', margin: '0 auto' }}>
         
-        {/* HISTORY LOOKUP */}
         <div style={{ ...styles.card, border: `1px solid ${theme.green}44` }}>
           <label style={{ fontSize: '10px', fontWeight: '800', color: theme.green }}>HISTORY LOOKUP</label>
           <input style={styles.input} placeholder="Search Match #" value={searchMatch} onChange={(e) => setSearchMatch(e.target.value)} />
@@ -167,19 +175,5 @@ TEAM ${t?.team || '???'}:
     </div>
   );
 };
-
-const Counter = ({ theme, label, value, onUpdate }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-    <span style={{ fontSize: '14px', fontWeight: '600' }}>{label}</span>
-    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-      <button type="button" onClick={() => onUpdate(Math.max(0, value - 1))} style={cBtn}>-</button>
-      <input type="number" value={value} onChange={(e) => onUpdate(parseInt(e.target.value) || 0)} style={cInput} />
-      <button type="button" onClick={() => onUpdate(value + 1)} style={{ ...cBtn, backgroundColor: theme.green, color: '#000', border: 'none' }}>+</button>
-    </div>
-  </div>
-);
-
-const cBtn = { width: '40px', height: '40px', borderRadius: '10px', border: '1px solid #334155', backgroundColor: '#1E293B', color: 'white', fontWeight: 'bold' };
-const cInput = { width: '45px', backgroundColor: 'transparent', border: 'none', color: 'white', textAlign: 'center', fontSize: '18px', fontWeight: '800', outline: 'none' };
 
 export default HuskyScout;
