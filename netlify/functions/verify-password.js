@@ -7,7 +7,15 @@ exports.handler = async (event, context) => {
     const { password } = JSON.parse(event.body);
     const correctPassword = process.env.PROCESS_MASTER_PASSWORD;
     
-    if (password === correctPassword) {
+    if (!correctPassword) {
+      return {
+        statusCode: 500,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ success: false, error: 'Server password configuration is missing. Please redeploy.' })
+      };
+    }
+    
+    if (password.trim() === correctPassword.trim()) {
       return {
         statusCode: 200,
         headers: { 'Content-Type': 'application/json' },
