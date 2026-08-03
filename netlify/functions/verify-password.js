@@ -4,8 +4,18 @@ exports.handler = async (event, context) => {
   }
   
   try {
-    const { password } = JSON.parse(event.body);
-    const correctPassword = process.env.PROCESS_MASTER_PASSWORD;
+    if (!event.body) {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ success: false, error: 'Missing request body' })
+      };
+    }
+
+    const body = JSON.parse(event.body);
+    const password = body.password ? String(body.password).trim() : "";
+    
+    let correctPassword = process.env.PROCESS_MASTER_PASSWORD;
     
     if (!correctPassword) {
       return {
@@ -14,8 +24,18 @@ exports.handler = async (event, context) => {
         body: JSON.stringify({ success: false, error: 'Server password configuration is missing. Please redeploy.' })
       };
     }
-    
-    if (password.trim() === correctPassword.trim()) {
+
+    correctPassword = correctPassword.trim().replace(/^['"]|['"]$/g, '');
+
+    if (!password) {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ success: false, error: 'Please enter a password' })
+      };
+    }
+
+    if (password === correctPassword) {
       return {
         statusCode: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -29,6 +49,10 @@ exports.handler = async (event, context) => {
       };
     }
   } catch (error) {
-    return { statusCode: 400, body: 'Invalid request' };
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ success: false, error: 'Server error: ' + error.message })
+    };
   }
 };
