@@ -1,4 +1,4 @@
-exports.handler = async (event, context) => {
+export const handler = async (event, context) => {
   const tbaKey = process.env.PROCESS_TBA_AUTH_KEY;
   const teamKey = 'frc4585';
   
