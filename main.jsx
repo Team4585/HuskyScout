@@ -11,30 +11,10 @@ const getEnv = (key) => {
 };
 
 const CONFIG = {
-  MASTER_PASSWORD: getEnv('MASTER_PASSWORD'),
   APPROVED_NAMES: getEnv('APPROVED_NAMES') ? getEnv('APPROVED_NAMES').split(',').map(n => n.trim()).filter(Boolean) : [],
-  TBA_API_KEY: getEnv('TBA_API_KEY'),
   TEAM_KEY: 'frc4585',
   YEAR: new Date().getFullYear(),
 };
-
-let db = null;
-try {
-  if (getEnv('FIREBASE_API_KEY')) {
-    const firebaseConfig = {
-      apiKey: getEnv('FIREBASE_API_KEY'),
-      authDomain: getEnv('FIREBASE_AUTH_DOMAIN'),
-      projectId: getEnv('FIREBASE_PROJECT_ID'),
-      storageBucket: getEnv('FIREBASE_STORAGE_BUCKET'),
-      messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID'),
-      appId: getEnv('FIREBASE_APP_ID')
-    };
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-  }
-} catch (e) {
-  console.error(e);
-}
 
 const theme = { green: '#22C55E', bg: '#0F172A', card: '#1E293B', text: '#F8FAFC', muted: '#94A3B8', border: '#334155' };
 
@@ -62,6 +42,7 @@ const Counter = ({ label, value, onUpdate }) => (
 );
 
 const HuskyScout = () => {
+  const [db, setDb] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [view, setView] = useState('menu');
   const [events, setEvents] = useState([]);
@@ -80,6 +61,25 @@ const HuskyScout = () => {
   const [pitData, setPitData] = useState({ ...emptyPit });
 
   useEffect(() => {
+    const initFirebase = async () => {
+      try {
+        const res = await fetch('/.netlify/functions/get-config');
+        if (res.ok) {
+          const config = await res.json();
+          if (config.apiKey) {
+            const app = initializeApp(config);
+            const firestoreDb = getFirestore(app);
+            setDb(firestoreDb);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    initFirebase();
+  }, []);
+
+  useEffect(() => {
     const saved = localStorage.getItem('husky_history');
     if (saved) {
       try { setHistory(JSON.parse(saved)); } catch (e) { console.error(e); }
@@ -87,12 +87,10 @@ const HuskyScout = () => {
   }, []);
 
   useEffect(() => {
-    if (!currentUser || !CONFIG.TBA_API_KEY) return;
+    if (!currentUser) return;
     const fetchTBA = async () => {
       try {
-        const res = await fetch(`https://www.thebluealliance.com/api/v3/team/${CONFIG.TEAM_KEY}/events/simple`, {
-          headers: { 'X-TBA-Auth-Key': CONFIG.TBA_API_KEY }
-        });
+        const res = await fetch('/.netlify/functions/get-events');
         if (res.ok) {
           const data = await res.json();
           const filtered = data.filter(ev => ev.year >= CONFIG.YEAR);
@@ -106,17 +104,28 @@ const HuskyScout = () => {
     fetchTBA();
   }, [currentUser]);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    if (!CONFIG.MASTER_PASSWORD) {
-      setLoginError('Password not configured in environment');
-    } else if (!loginName) {
+    setLoginError('');
+    if (!loginName) {
       setLoginError('No scouters configured in environment');
-    } else if (loginPass === CONFIG.MASTER_PASSWORD) {
-      setCurrentUser(loginName);
-      setLoginError('');
-    } else {
-      setLoginError('Incorrect password');
+      return;
+    }
+    
+    try {
+      const res = await fetch('/.netlify/functions/verify-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: loginPass })
+      });
+      const result = await res.json();
+      if (res.ok && result.success) {
+        setCurrentUser(loginName);
+      } else {
+        setLoginError(result.error || 'Incorrect password');
+      }
+    } catch (err) {
+      setLoginError('Error verifying password');
     }
   };
 
