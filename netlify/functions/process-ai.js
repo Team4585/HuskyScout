@@ -49,7 +49,7 @@ You MUST return your response in valid JSON format with EXACTLY the following st
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-3.2-3b-instruct:free',
+        model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 500
       })
