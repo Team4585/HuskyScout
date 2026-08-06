@@ -34,6 +34,8 @@ Here is the ranked picklist compiled from our scouting data:
 ${payload}
 
 Provide a detailed strategic analysis and a recommended picklist order based on the specified focus.
+
+You have to make sure it's not unrealistic. Predict which teams will pick which bots so you know which bots will be availible for second picks. 
 You MUST return your response in a valid JSON object with EXACTLY the following structure:
 {
   "report": "Detailed strategic analysis. Detail top 2 optimal first picks, second-pick support/defense bots, and potential trap teams based on notes and pit specs.",
