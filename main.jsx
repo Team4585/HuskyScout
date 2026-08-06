@@ -1,8 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
-import { QRCodeSVG } from 'qrcode.react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc } from 'firebase/firestore';
 
 const getEnv = (key) => {
   const p = typeof process !== 'undefined' && process.env ? process.env : {};
@@ -46,9 +45,29 @@ const Counter = ({ label, value, onUpdate }) => (
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
     <span style={{ fontSize: '14px', fontWeight: '600' }}>{label}</span>
     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-      <button type="button" onClick={() => onUpdate(Math.max(0, value - 1))} style={{ width: '40px', height: '40px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
-      <input type="number" value={value} onChange={(e) => onUpdate(Math.max(0, parseInt(e.target.value, 10) || 0))} style={{ width: '45px', backgroundColor: 'transparent', border: 'none', color: 'white', textAlign: 'center', fontSize: '18px', fontWeight: '800', outline: 'none' }} />
-      <button type="button" onClick={() => onUpdate(value + 1)} style={{ width: '40px', height: '40px', borderRadius: '10px', border: 'none', backgroundColor: theme.green, color: '#000', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
+      <button 
+        type="button" 
+        onClick={() => onUpdate(Math.max(0, (parseInt(value, 10) || 0) - 1))} 
+        style={{ width: '40px', height: '40px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}
+      >
+        -
+      </button>
+      <input 
+        type="number" 
+        value={value} 
+        onChange={(e) => {
+          const val = e.target.value;
+          onUpdate(val === '' ? '' : Math.max(0, parseInt(val, 10) || 0));
+        }} 
+        style={{ width: '45px', backgroundColor: 'transparent', border: 'none', color: 'white', textAlign: 'center', fontSize: '18px', fontWeight: '800', outline: 'none' }} 
+      />
+      <button 
+        type="button" 
+        onClick={() => onUpdate((parseInt(value, 10) || 0) + 1)} 
+        style={{ width: '40px', height: '40px', borderRadius: '10px', border: 'none', backgroundColor: theme.green, color: '#000', fontWeight: 'bold', cursor: 'pointer' }}
+      >
+        +
+      </button>
     </div>
   </div>
 );
@@ -61,9 +80,18 @@ const HuskyScout = () => {
   const [selectedEvent, setSelectedEvent] = useState('');
   const [matches, setMatches] = useState([]);
   const [history, setHistory] = useState([]);
-  const [picklist, setPicklist] = useState([]);
-  const [showQR, setShowQR] = useState(false);
-  const [qrPayload, setQrPayload] = useState('');
+  const [customOrders, setCustomOrders] = useState({});
+
+  const [manualEventMode, setManualEventMode] = useState(false);
+
+  const [aiStrategy, setAiStrategy] = useState('balanced');
+  const [ourRobotSpecs, setOurRobotSpecs] = useState('Swerve drive, elevator mechanism, high-scoring offensive, capable of climb.');
+  
+  const [aiSuggestions, setAiSuggestions] = useState('');
+  const [aiRecommendedOrder, setAiRecommendedOrder] = useState([]);
+  const [previewAiOrder, setPreviewAiOrder] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
+  const [aiError, setAiError] = useState('');
 
   const [loginName, setLoginName] = useState(CONFIG.APPROVED_NAMES[0] || '');
   const [loginPass, setLoginPass] = useState('');
@@ -73,6 +101,45 @@ const HuskyScout = () => {
   const emptyPit = { team: '', drivetrain: 'Swerve', mechanism: 'Elevator', notes: '' };
   const [matchData, setMatchData] = useState({ ...emptyMatch });
   const [pitData, setPitData] = useState({ ...emptyPit });
+
+  const todayStr = useMemo(() => getLocalDateString(), []);
+
+  const activeEventDetails = useMemo(() => {
+    return events.find(e => e.key === selectedEvent);
+  }, [events, selectedEvent]);
+
+  const appMode = useMemo(() => {
+    if (manualEventMode) {
+      return 'active';
+    }
+    if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) {
+      return 'test';
+    }
+    const getDaysDifference = (dateStr1, dateStr2) => {
+      const d1 = new Date(dateStr1 + 'T00:00:00');
+      const d2 = new Date(dateStr2 + 'T00:00:00');
+      const diffTime = d1 - d2;
+      return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    };
+    const daysToStart = getDaysDifference(activeEventDetails.start_date, todayStr);
+    if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) {
+      return 'active';
+    } else if (daysToStart > 0 && daysToStart <= 7) {
+      return 'preevent';
+    }
+    return 'test';
+  }, [activeEventDetails, todayStr, manualEventMode]);
+
+  useEffect(() => {
+    const viewTitles = {
+      menu: 'HuskyScout',
+      match: 'Match Scouting - HuskyScout',
+      pit: 'Pit Scouting - HuskyScout',
+      picklist: 'Alliance Picklist - HuskyScout',
+      history: 'Archive - HuskyScout',
+    };
+    document.title = viewTitles[view] || 'HuskyScout';
+  }, [view]);
 
   useEffect(() => {
     const initFirebase = async () => {
@@ -94,11 +161,31 @@ const HuskyScout = () => {
   }, []);
 
   useEffect(() => {
-    const saved = localStorage.getItem('husky_history');
-    if (saved) {
-      try { setHistory(JSON.parse(saved)); } catch (e) { console.error(e); }
-    }
-  }, []);
+    if (!db) return;
+    const fetchHistory = async () => {
+      try {
+        const querySnapshot = await getDocs(collection(db, 'scouting_data'));
+        const loadedHistory = [];
+        for (const docSnap of querySnapshot.docs) {
+          const docData = docSnap.data();
+          if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
+            try {
+              await deleteDoc(doc(db, 'scouting_data', docSnap.id));
+            } catch (err) {
+              console.error(err);
+            }
+          } else {
+            loadedHistory.push({ ...docData, firestoreId: docSnap.id });
+          }
+        }
+        loadedHistory.sort((a, b) => (a.id || 0) - (b.id || 0));
+        setHistory(loadedHistory);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchHistory();
+  }, [db, todayStr]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -107,15 +194,13 @@ const HuskyScout = () => {
         const res = await fetch('/.netlify/functions/get-events');
         if (res.ok) {
           const data = await res.json();
-          const todayStr = getLocalDateString();
-          const filtered = data.filter(ev => {
-            if (ev.end_date) {
-              return ev.end_date >= todayStr;
-            }
-            return ev.year >= CONFIG.YEAR;
-          });
+          const filtered = data.filter(ev => ev.year >= CONFIG.YEAR - 1);
           setEvents(filtered);
-          if (filtered.length > 0) setSelectedEvent(filtered[0].key);
+          if (filtered.length > 0) {
+            const todayStrLocal = getLocalDateString();
+            const activeOrFuture = filtered.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
+            setSelectedEvent(activeOrFuture ? activeOrFuture.key : filtered[0].key);
+          }
         }
       } catch (e) {
         console.error(e);
@@ -148,27 +233,47 @@ const HuskyScout = () => {
     fetchMatches();
   }, [selectedEvent]);
 
-  const getAllTeams = () => {
+  const teamsInMatch = useMemo(() => {
+    const foundMatch = matches.find(m => String(m.match_number) === String(matchData.match));
+    return foundMatch 
+      ? [
+          ...foundMatch.alliances.red.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'red' })),
+          ...foundMatch.alliances.blue.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'blue' }))
+        ]
+      : [];
+  }, [matches, matchData.match]);
+
+  useEffect(() => {
+    if (teamsInMatch.length > 0) {
+      const matchTeams = teamsInMatch.map(t => t.team);
+      setMatchData(prev => {
+        if (!matchTeams.includes(prev.team)) {
+          return { ...prev, team: matchTeams[0] };
+        }
+        return prev;
+      });
+    }
+  }, [teamsInMatch]);
+
+  const picklist = useMemo(() => {
+    if (!selectedEvent) return [];
+
     const uniqueTeams = new Set();
     matches.forEach(m => {
-      if (m.alliances && m.alliances.red && m.alliances.red.teams) {
+      if (m.alliances?.red?.teams) {
         m.alliances.red.teams.forEach(t => uniqueTeams.add(t.replace(/^frc/, '')));
       }
-      if (m.alliances && m.alliances.blue && m.alliances.blue.teams) {
+      if (m.alliances?.blue?.teams) {
         m.alliances.blue.teams.forEach(t => uniqueTeams.add(t.replace(/^frc/, '')));
       }
     });
     history.forEach(h => {
-      if (h.event === selectedEvent && h.data && h.data.team) {
+      if (h.event === selectedEvent && h.data?.team) {
         uniqueTeams.add(String(h.data.team));
       }
     });
-    return Array.from(uniqueTeams);
-  };
+    const allTeams = Array.from(uniqueTeams);
 
-  useEffect(() => {
-    if (!selectedEvent) return;
-    const allTeams = getAllTeams();
     const teamsWithStats = allTeams.map(t => {
       const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team) === String(t));
       
@@ -176,15 +281,13 @@ const HuskyScout = () => {
         ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1))
         : 0;
 
-      const defIndices = teamMatches.map(h => {
-        const dq = Number(h.data.defenseQuality || 0);
-        const df = Number(h.data.defenseFouls || 0);
-        if (dq === 0) return 0;
-        return Math.max(0, dq - (df * 0.5));
-      });
-
-      const avgDef = teamMatches.length > 0
-        ? parseFloat((defIndices.reduce((sum, val) => sum + val, 0) / teamMatches.length).toFixed(1))
+      const playedDefMatches = teamMatches.filter(h => Number(h.data.defenseQuality || 0) > 0);
+      const avgDef = playedDefMatches.length > 0
+        ? parseFloat((playedDefMatches.reduce((sum, h) => {
+            const dq = Number(h.data.defenseQuality || 0);
+            const df = Number(h.data.defenseFouls || 0);
+            return sum + Math.max(0, dq - (df * 0.5));
+          }, 0) / playedDefMatches.length).toFixed(1))
         : 0;
 
       const hybrid = parseFloat((avgOff + (avgDef * 5)).toFixed(1));
@@ -192,27 +295,23 @@ const HuskyScout = () => {
       return { team: t, avgOff, avgDef, hybrid };
     });
 
-    const savedOrder = localStorage.getItem(`husky_picklist_${selectedEvent}`);
-    let ordered = [];
-    if (savedOrder) {
-      try {
-        const savedArray = JSON.parse(savedOrder);
-        const savedSet = new Set(savedArray);
-        const inSaved = savedArray
-          .map(tNum => teamsWithStats.find(t => t.team === tNum))
-          .filter(Boolean);
-        const notInSaved = teamsWithStats
-          .filter(t => !savedSet.has(t.team))
-          .sort((a, b) => b.hybrid - a.hybrid);
-        ordered = [...inSaved, ...notInSaved];
-      } catch (e) {
-        ordered = teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
-      }
+    const activeOrder = (previewAiOrder && aiRecommendedOrder.length > 0) 
+      ? aiRecommendedOrder 
+      : customOrders[selectedEvent];
+
+    if (activeOrder) {
+      const savedSet = new Set(activeOrder);
+      const inSaved = activeOrder
+        .map(tNum => teamsWithStats.find(t => String(t.team) === String(tNum)))
+        .filter(Boolean);
+      const notInSaved = teamsWithStats
+        .filter(t => !savedSet.has(String(t.team)))
+        .sort((a, b) => b.hybrid - a.hybrid);
+      return [...inSaved, ...notInSaved];
     } else {
-      ordered = teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
+      return teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
     }
-    setPicklist(ordered);
-  }, [selectedEvent, history, matches, view]);
+  }, [selectedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder]);
 
   const moveTeam = (index, direction) => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
@@ -220,57 +319,92 @@ const HuskyScout = () => {
     const updated = [...picklist];
     const [movedItem] = updated.splice(index, 1);
     updated.splice(newIndex, 0, movedItem);
-    setPicklist(updated);
-    localStorage.setItem(`husky_picklist_${selectedEvent}`, JSON.stringify(updated.map(t => t.team)));
+    
+    setCustomOrders(prev => ({
+      ...prev,
+      [selectedEvent]: updated.map(t => String(t.team))
+    }));
   };
 
   const resetPicklist = () => {
     if (window.confirm("Reset picklist order back to Hybrid score ranking?")) {
-      localStorage.removeItem(`husky_picklist_${selectedEvent}`);
-      const allTeams = getAllTeams();
-      const teamsWithStats = allTeams.map(t => {
-        const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team) === String(t));
-        const avgOff = teamMatches.length > 0 
-          ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1))
-          : 0;
-        const defIndices = teamMatches.map(h => {
-          const dq = Number(h.data.defenseQuality || 0);
-          const df = Number(h.data.defenseFouls || 0);
-          if (dq === 0) return 0;
-          return Math.max(0, dq - (df * 0.5));
-        });
-        const avgDef = teamMatches.length > 0
-          ? parseFloat((defIndices.reduce((sum, val) => sum + val, 0) / teamMatches.length).toFixed(1))
-          : 0;
-        const hybrid = parseFloat((avgOff + (avgDef * 5)).toFixed(1));
-        return { team: t, avgOff, avgDef, hybrid };
+      setCustomOrders(prev => {
+        const next = { ...prev };
+        delete next[selectedEvent];
+        return next;
       });
-      setPicklist(teamsWithStats.sort((a, b) => b.hybrid - a.hybrid));
     }
   };
 
-  const foundMatch = matches.find(m => String(m.match_number) === String(matchData.match));
-  const teamsInMatch = foundMatch 
-    ? [
-        ...foundMatch.alliances.red.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'red' })),
-        ...foundMatch.alliances.blue.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'blue' }))
-      ]
-    : [];
-
-  useEffect(() => {
-    if (teamsInMatch.length > 0) {
-      const matchTeams = teamsInMatch.map(t => t.team);
-      if (!matchTeams.includes(matchData.team)) {
-        setMatchData(prev => ({ ...prev, team: matchTeams[0] }));
+  const runRemoteAiAnalysis = async () => {
+    setLoadingAi(true);
+    setAiError('');
+    setAiSuggestions('');
+    try {
+      if (picklist.length === 0) {
+        throw new Error('No active teams are registered in the current event picklist.');
       }
+
+      const payloadData = picklist.map((item, index) => {
+        const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team) === String(item.team));
+        const pitRecords = teamHistory.filter(h => h.type === 'pit');
+        const matchRecords = teamHistory.filter(h => h.type === 'match');
+        
+        const pitNotes = pitRecords.map(h => h.data.notes).filter(Boolean).join(' | ');
+        const matchNotes = matchRecords.map(h => h.data.notes).filter(Boolean).join(' | ');
+        
+        const drivetrains = Array.from(new Set(pitRecords.map(h => h.data.drivetrain).filter(Boolean))).join(', ') || 'Unknown';
+        const mechanisms = Array.from(new Set(pitRecords.map(h => h.data.mechanism).filter(Boolean))).join(', ') || 'Unknown';
+        
+        return `Rank #${index + 1} - Team ${item.team}:
+  - Metrics: Avg Offense: ${item.avgOff}, Avg Defense: ${item.avgDef}, Hybrid: ${item.hybrid}
+  - Pit Specs: Drivetrain [${drivetrains}], Primary Mechanism [${mechanisms}]
+  - Pit Notes: ${pitNotes || 'None'}
+  - Match Notes: ${matchNotes || 'None'}`;
+      }).join('\n\n');
+
+      const res = await fetch('/.netlify/functions/process-ai', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          event: selectedEvent,
+          specs: ourRobotSpecs,
+          strategy: aiStrategy,
+          payload: payloadData
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to analyze picklist via serverless function.');
+      }
+
+      const parsed = await res.json();
+      
+      if (!parsed.success) {
+        throw new Error(parsed.error || 'Server processing error.');
+      }
+
+      setAiSuggestions(parsed.report || 'No analysis report returned.');
+      if (Array.isArray(parsed.recommended_order)) {
+        const stringifiedOrder = parsed.recommended_order.map(String);
+        setAiRecommendedOrder(stringifiedOrder);
+        setPreviewAiOrder(true);
+      }
+    } catch (err) {
+      setAiError(err.message || 'Error generating AI suggestions.');
+    } finally {
+      setLoadingAi(false);
     }
-  }, [matchData.match, matches]);
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
     if (!loginName) {
-      setLoginError('No scouters configured in environment');
+      setLoginError('No user selected or configured');
       return;
     }
     
@@ -291,11 +425,19 @@ const HuskyScout = () => {
     }
   };
 
-  const saveToHistory = async (type, data, payload) => {
-    const record = { id: Date.now(), type, scouter: currentUser, event: selectedEvent, data, payload, timestamp: new Date().toLocaleTimeString() };
+  const saveToHistory = async (type, data) => {
+    const record = { 
+      id: Date.now(), 
+      type, 
+      scouter: currentUser, 
+      event: selectedEvent, 
+      data, 
+      timestamp: new Date().toLocaleTimeString(),
+      isTest: appMode === 'test',
+      dateString: todayStr
+    };
     const updated = [...history, record];
     setHistory(updated);
-    localStorage.setItem('husky_history', JSON.stringify(updated));
     if (db) {
       try {
         await addDoc(collection(db, 'scouting_data'), record);
@@ -303,28 +445,22 @@ const HuskyScout = () => {
         console.error(e);
       }
     }
-    setShowQR(false);
     if (type === 'match') {
-      const nextMatch = (parseInt(matchData.match, 10) || 0) + 1;
+      const nextMatch = (parseInt(data.match, 10) || 0) + 1;
       setMatchData({ ...emptyMatch, match: String(nextMatch) });
     }
     if (type === 'pit') setPitData({ ...emptyPit });
     setView('menu');
   };
 
-  const generateMatchQR = (e) => {
+  const handleMatchSubmit = (e) => {
     e.preventDefault();
-    const score = calculateScore(matchData.autoPieces, matchData.teleopPieces, matchData.climb);
-    const payload = `TYPE:MATCH|Scout:${currentUser}|Evnt:${selectedEvent}|M:${matchData.match}|T:${matchData.team}|Auto:${matchData.autoPieces}|Tele:${matchData.teleopPieces}|Climb:${matchData.climb?'Y':'N'}|DQ:${matchData.defenseQuality}|DF:${matchData.defenseFouls}|Score:${score}|Note:${matchData.notes||'None'}`;
-    setQrPayload(payload);
-    setShowQR(true);
+    saveToHistory('match', matchData);
   };
 
-  const generatePitQR = (e) => {
+  const handlePitSubmit = (e) => {
     e.preventDefault();
-    const payload = `TYPE:PIT|Scout:${currentUser}|Evnt:${selectedEvent}|T:${pitData.team}|Drv:${pitData.drivetrain}|Mech:${pitData.mechanism}|Note:${pitData.notes||'None'}`;
-    setQrPayload(payload);
-    setShowQR(true);
+    saveToHistory('pit', pitData);
   };
 
   if (!currentUser) {
@@ -335,13 +471,13 @@ const HuskyScout = () => {
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
             <div>
               <label style={{ fontSize: '10px', color: theme.muted, display: 'block', textAlign: 'left', marginBottom: '5px' }}>SCOUTER NAME</label>
-              <select style={styles.input} value={loginName} onChange={(e) => setLoginName(e.target.value)}>
-                {CONFIG.APPROVED_NAMES.length > 0 ? (
-                  CONFIG.APPROVED_NAMES.map(name => <option key={name} value={name}>{name}</option>)
-                ) : (
-                  <option value="">No users set in environment</option>
-                )}
-              </select>
+              {CONFIG.APPROVED_NAMES.length > 0 ? (
+                <select style={styles.input} value={loginName} onChange={(e) => setLoginName(e.target.value)}>
+                  {CONFIG.APPROVED_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              ) : (
+                <input type="text" style={styles.input} placeholder="Scouter Name" value={loginName} onChange={(e) => setLoginName(e.target.value)} required />
+              )}
             </div>
             <div>
               <label style={{ fontSize: '10px', color: theme.muted, display: 'block', textAlign: 'left', marginBottom: '5px' }}>PASSWORD</label>
@@ -366,24 +502,74 @@ const HuskyScout = () => {
         {view === 'menu' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
             <div style={styles.card}>
-              <label style={{ fontSize: '10px', color: theme.green, fontWeight: '800' }}>ACTIVE EVENT (TBA)</label>
-              {events.length > 0 ? (
-                <select style={{ ...styles.input, marginTop: '5px' }} value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)}>
-                  {events.map(ev => <option key={ev.key} value={ev.key}>{ev.name}</option>)}
-                </select>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <label style={{ fontSize: '10px', color: theme.green, fontWeight: '800' }}>ACTIVE EVENT</label>
+                <label style={{ fontSize: '10px', color: theme.muted, display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={manualEventMode} onChange={e => { setManualEventMode(e.target.checked); setSelectedEvent(''); }} style={{ accentColor: theme.green }} />
+                  Manual Event Entry
+                </label>
+              </div>
+              
+              {manualEventMode ? (
+                <input 
+                  style={styles.input} 
+                  placeholder="Type Event Code (e.g. 2026utwv or custom_offseason)" 
+                  value={selectedEvent} 
+                  onChange={e => setSelectedEvent(e.target.value)} 
+                />
               ) : (
-                <input style={{ ...styles.input, marginTop: '5px' }} placeholder="Manual Event Code (e.g. 2024utwv)" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)} />
+                <div>
+                  {events.length > 0 ? (
+                    <select style={{ ...styles.input, marginTop: '5px' }} value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)}>
+                      {events.map(ev => <option key={ev.key} value={ev.key}>{ev.name}</option>)}
+                    </select>
+                  ) : (
+                    <input style={{ ...styles.input, marginTop: '5px' }} placeholder="Type Event Code (e.g. 2026utwv)" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)} />
+                  )}
+                </div>
               )}
+
+              <div style={{ marginTop: '10px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center' }}>
+                {appMode === 'test' && <span style={{ color: '#F59E0B' }}>⚠️ TEST MODE ACTIVE (Data deletes daily)</span>}
+                {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>📅 PRE-EVENT MODE (Pit scouting only)</span>}
+                {appMode === 'active' && <span style={{ color: theme.green }}>🟢 EVENT ACTIVE (All features unlocked)</span>}
+              </div>
             </div>
-            <button onClick={() => setView('match')} style={styles.btn}>MATCH SCOUTING</button>
+            
+            <button 
+              onClick={() => { if (appMode !== 'preevent') setView('match'); }} 
+              disabled={appMode === 'preevent'}
+              style={{ 
+                ...styles.btn, 
+                backgroundColor: appMode === 'preevent' ? '#334155' : theme.green, 
+                color: appMode === 'preevent' ? theme.muted : '#052e16',
+                cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {appMode === 'preevent' ? 'MATCH SCOUTING (LOCKED)' : 'MATCH SCOUTING'}
+            </button>
+
             <button onClick={() => setView('pit')} style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>PIT SCOUTING</button>
-            <button onClick={() => setView('picklist')} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>ALLIANCE PICKLIST</button>
+
+            <button 
+              onClick={() => { if (appMode !== 'preevent') setView('picklist'); }} 
+              disabled={appMode === 'preevent'}
+              style={{ 
+                ...styles.btn, 
+                backgroundColor: appMode === 'preevent' ? '#334155' : '#8B5CF6', 
+                color: appMode === 'preevent' ? theme.muted : 'white',
+                cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {appMode === 'preevent' ? 'ALLIANCE PICKLIST (LOCKED)' : 'ALLIANCE PICKLIST'}
+            </button>
+
             <button onClick={() => setView('history')} style={styles.btnOutline}>VIEW HISTORY ({history.length})</button>
           </div>
         )}
 
-        {view === 'match' && !showQR && (
-          <form onSubmit={generateMatchQR}>
+        {view === 'match' && (
+          <form onSubmit={handleMatchSubmit}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
               <button type="button" onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
               <span style={{ fontWeight: 'bold', color: theme.green }}>MATCH SCOUTING</span>
@@ -452,12 +638,12 @@ const HuskyScout = () => {
               </div>
               <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} placeholder="Match notes..." value={matchData.notes} onChange={e => setMatchData({ ...matchData, notes: e.target.value })} />
             </div>
-            <button type="submit" style={styles.btn}>GENERATE MATCH QR</button>
+            <button type="submit" style={styles.btn}>SUBMIT & SAVE MATCH</button>
           </form>
         )}
 
-        {view === 'pit' && !showQR && (
-          <form onSubmit={generatePitQR}>
+        {view === 'pit' && (
+          <form onSubmit={handlePitSubmit}>
              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
               <button type="button" onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
               <span style={{ fontWeight: 'bold', color: '#3B82F6' }}>PIT SCOUTING</span>
@@ -485,7 +671,7 @@ const HuskyScout = () => {
               </div>
               <textarea style={{ ...styles.input, height: '80px', resize: 'none' }} placeholder="Robot specs, weight, auto capabilities, etc..." value={pitData.notes} onChange={e => setPitData({ ...pitData, notes: e.target.value })} />
             </div>
-            <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>GENERATE PIT QR</button>
+            <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>SUBMIT & SAVE PIT</button>
           </form>
         )}
 
@@ -499,6 +685,36 @@ const HuskyScout = () => {
               <span style={{ fontSize: '11px', color: theme.muted }}>RANKED BY HYBRID SCORE (W = 5)</span>
               <button onClick={resetPicklist} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>Reset to Stats Default</button>
             </div>
+
+            {previewAiOrder && aiRecommendedOrder.length > 0 && (
+              <div style={{ ...styles.card, border: `1px solid #F59E0B`, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED ORDER</span>
+                  <span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button 
+                    onClick={() => {
+                      setCustomOrders(prev => ({ ...prev, [selectedEvent]: aiRecommendedOrder }));
+                      setPreviewAiOrder(false);
+                    }} 
+                    style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    Approve
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setPreviewAiOrder(false);
+                      setAiRecommendedOrder([]);
+                    }} 
+                    style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+
             {picklist.length === 0 ? (
               <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No teams found for this event yet. Enter match schedule or scout teams to populate.</div>
             ) : (
@@ -536,6 +752,35 @@ const HuskyScout = () => {
                 ))}
               </div>
             )}
+
+            <div style={{ ...styles.card, marginTop: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <span style={{ fontSize: '14px', fontWeight: '800', color: '#8B5CF6' }}>STRATEGIC SELECTION ADVISOR</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '15px' }}>
+                <div>
+                  <label style={{ fontSize: '10px', color: theme.muted }}>ALLIANCE FOCUS STRATEGY</label>
+                  <select style={{ ...styles.input, marginTop: '5px' }} value={aiStrategy} onChange={e => setAiStrategy(e.target.value)}>
+                    <option value="balanced">Complementary / Balanced Alliance</option>
+                    <option value="offense">Maximum Offensive Cycling Power</option>
+                    <option value="defense">Defensive Guard & Field Control</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: theme.muted }}>OUR ROBOT SPECS (FOR ALIGNMENT MATRIX)</label>
+                  <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourRobotSpecs} onChange={e => setOurRobotSpecs(e.target.value)} />
+                </div>
+              </div>
+              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>
+                {loadingAi ? 'ANALYZING MATRIX PROFILES...' : 'GENERATE STRATEGIC SUGGESTIONS'}
+              </button>
+              {aiError && <div style={{ color: '#EF4444', fontSize: '12px', marginTop: '10px', fontWeight: 'bold' }}>{aiError}</div>}
+              {aiSuggestions && (
+                <div style={{ marginTop: '15px', padding: '12px', backgroundColor: '#0F172A', borderRadius: '10px', border: `1px solid ${theme.border}`, maxHeight: '300px', overflowY: 'auto' }}>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'sans-serif', fontSize: '12px', color: theme.text, margin: 0, lineHeight: '1.5' }}>{aiSuggestions}</pre>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -548,7 +793,7 @@ const HuskyScout = () => {
             {history.length === 0 ? (
               <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div>
             ) : (
-              history.map(record => (
+              [...history].reverse().map(record => (
                 <div key={record.id} style={{ ...styles.card, borderLeft: `4px solid ${record.type === 'pit' ? '#3B82F6' : theme.green}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
                     <span>
@@ -557,23 +802,25 @@ const HuskyScout = () => {
                     </span>
                     <span>{record.timestamp}</span>
                   </div>
-                  <div style={{ marginTop: '10px' }}>
-                    <button onClick={() => { setQrPayload(record.payload); setShowQR(true); }} style={{ padding: '6px 12px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', cursor: 'pointer', fontSize: '12px' }}>View QR</button>
+                  <div style={{ marginTop: '8px', fontSize: '13px', color: '#E2E8F0', lineHeight: '1.4' }}>
+                    {record.type === 'match' ? (
+                      <div>
+                        <div>Match {record.data.match}</div>
+                        <div>Auto: {record.data.autoPieces} | Teleop: {record.data.teleopPieces} | Climb: {record.data.climb ? 'Yes' : 'No'}</div>
+                        <div>Defense Quality: {record.data.defenseQuality} (Fouls: {record.data.defenseFouls})</div>
+                        {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                      </div>
+                    ) : (
+                      <div>
+                        <div>Drivetrain: {record.data.drivetrain}</div>
+                        <div>Mechanism: {record.data.mechanism}</div>
+                        {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                      </div>
+                    )}
                   </div>
                 </div>
-              )).reverse()
+              ))
             )}
-          </div>
-        )}
-
-        {showQR && (
-          <div style={{ ...styles.card, textAlign: 'center' }}>
-            <h3 style={{ color: qrPayload.includes('TYPE:PIT') ? '#3B82F6' : theme.green }}>SCAN READY</h3>
-            <div style={{ backgroundColor: 'white', padding: '12px', borderRadius: '12px', display: 'inline-block', marginBottom: '20px' }}>
-              <QRCodeSVG value={qrPayload} size={280} level="L" includeMargin={true} />
-            </div>
-            <button onClick={() => setShowQR(false)} style={{ ...styles.btnOutline, marginBottom: '10px' }}>BACK TO EDIT</button>
-            <button onClick={() => saveToHistory(qrPayload.includes('TYPE:PIT') ? 'pit' : 'match', qrPayload.includes('TYPE:PIT') ? pitData : matchData, qrPayload)} style={{ ...styles.btn, backgroundColor: 'white', color: 'black' }}>ARCHIVE & CONTINUE</button>
           </div>
         )}
       </main>
