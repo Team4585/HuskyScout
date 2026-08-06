@@ -1,5 +1,3 @@
-const fetch = require('node-fetch');
-
 export const handler = async (event, context) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -51,8 +49,9 @@ You MUST return your response in valid JSON format with EXACTLY the following st
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        model: 'openrouter/free',
-        messages: [{ role: 'user', content: prompt }]
+        model: 'meta-llama/llama-3.2-3b-instruct:free',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500
       })
     });
 
@@ -69,27 +68,23 @@ You MUST return your response in valid JSON format with EXACTLY the following st
     const text = data.choices?.[0]?.message?.content || '';
 
     let jsonText = text.trim();
-    if (jsonText.startsWith('```')) {
-      const parts = jsonText.split('```');
-      jsonText = parts[1];
-      if (jsonText.startsWith('json')) {
-        jsonText = jsonText.substring(4);
-      }
-    }
-    jsonText = jsonText.trim();
-    if (jsonText.endsWith('```')) {
-      jsonText = jsonText.substring(0, jsonText.length - 3).trim();
+    const firstBrace = jsonText.indexOf('{');
+    const lastBrace = jsonText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
     }
 
     const parsed = JSON.parse(jsonText);
+    const report = parsed.report || text;
+    const recommended_order = Array.isArray(parsed.recommended_order) ? parsed.recommended_order : [];
 
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         success: true,
-        report: parsed.report,
-        recommended_order: parsed.recommended_order
+        report,
+        recommended_order
       })
     };
   } catch (err) {
