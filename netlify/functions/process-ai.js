@@ -1,3 +1,5 @@
+const fetch = require('node-fetch');
+
 export const handler = async (event, context) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -49,7 +51,7 @@ You MUST return your response in valid JSON format with EXACTLY the following st
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-3-8b-instruct:free',
+        model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }]
       })
     });
