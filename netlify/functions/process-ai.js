@@ -34,7 +34,7 @@ Here is the ranked picklist compiled from our scouting data:
 ${payload}
 
 Provide a detailed strategic analysis and a recommended picklist order based on the specified focus.
-You MUST return your response in valid JSON format with EXACTLY the following structure. Do not include any markdown formatting or prefix like \`\`\`json, just return raw JSON text:
+You MUST return your response in a valid JSON object with EXACTLY the following structure:
 {
   "report": "Detailed strategic analysis. Detail top 2 optimal first picks, second-pick support/defense bots, and potential trap teams based on notes and pit specs.",
   "recommended_order": ["TeamNumber1", "TeamNumber2", "TeamNumber3"]
@@ -45,13 +45,14 @@ You MUST return your response in valid JSON format with EXACTLY the following st
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey.trim()}`,
-        'HTTP-Referer': 'https://huskyscout.com',
+        'HTTP-Referer': 'https://huskyscout.netlify.app',
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
         model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 500
+        max_tokens: 500,
+        response_format: { type: 'json_object' }
       })
     });
 
