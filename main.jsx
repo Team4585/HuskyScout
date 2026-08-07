@@ -3,13 +3,11 @@ import ReactDOM from 'react-dom/client';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc } from 'firebase/firestore';
 
-const simpleHash = (str) => {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash) + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return String(hash);
+const secureHash = async (username, password) => {
+  const msgBuffer = new TextEncoder().encode(username.toLowerCase().trim() + password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
 const getEnv = (key) => {
@@ -549,9 +547,12 @@ const HuskyScout = () => {
       return;
     }
 
+    const localKey = 'husky_scout_offline_' + loginName.toLowerCase().trim();
+    const localHash = await secureHash(loginName, loginPass);
+
     if (!isOnline) {
-      const cachedHash = localStorage.getItem('husky_scout_offline_token');
-      if (cachedHash && cachedHash === simpleHash(loginPass)) {
+      const cachedHash = localStorage.getItem(localKey);
+      if (cachedHash && cachedHash === localHash) {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
       } else {
@@ -570,7 +571,7 @@ const HuskyScout = () => {
       if (res.ok && result.success) {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
-        localStorage.setItem('husky_scout_offline_token', simpleHash(loginPass));
+        localStorage.setItem(localKey, localHash);
       } else {
         setLoginError(result.error || 'Incorrect password');
       }
