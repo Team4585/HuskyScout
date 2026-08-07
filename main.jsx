@@ -1,7 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, getDocs, doc, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc } from 'firebase/firestore';
+
+const simpleHash = (str) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return String(hash);
+};
 
 const getEnv = (key) => {
   const p = typeof process !== 'undefined' && process.env ? process.env : {};
@@ -212,19 +221,17 @@ const HuskyScout = () => {
     if (firestoreDb && isOnline) {
       try {
         const querySnapshot = await getDocs(collection(firestoreDb, 'scouting_data'));
-        const batch = writeBatch(firestoreDb);
-        let hasDeletes = false;
         for (const docSnap of querySnapshot.docs) {
           const docData = docSnap.data();
           if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
-            batch.delete(doc(firestoreDb, 'scouting_data', docSnap.id));
-            hasDeletes = true;
+            try {
+              await deleteDoc(doc(firestoreDb, 'scouting_data', docSnap.id));
+            } catch (err) {
+              console.error(err);
+            }
           } else {
             remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
-        }
-        if (hasDeletes) {
-          await batch.commit();
         }
       } catch (e) {
         console.error(e);
@@ -543,12 +550,12 @@ const HuskyScout = () => {
     }
 
     if (!isOnline) {
-      const offlinePassCached = localStorage.getItem('husky_scout_pass_verified');
-      if (offlinePassCached === 'true') {
+      const cachedHash = localStorage.getItem('husky_scout_offline_token');
+      if (cachedHash && cachedHash === simpleHash(loginPass)) {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
       } else {
-        setLoginError('Offline login requires at least one previous online verification on this device.');
+        setLoginError('Incorrect password or no offline credentials cached on this device.');
       }
       return;
     }
@@ -563,7 +570,7 @@ const HuskyScout = () => {
       if (res.ok && result.success) {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
-        localStorage.setItem('husky_scout_pass_verified', 'true');
+        localStorage.setItem('husky_scout_offline_token', simpleHash(loginPass));
       } else {
         setLoginError(result.error || 'Incorrect password');
       }
@@ -580,11 +587,12 @@ const HuskyScout = () => {
 
   const saveToHistory = async (type, data) => {
     const standardizedData = { ...data, team: String(data.team).trim() };
+    const recordEvent = appMode === 'test' ? 'test_event' : selectedEvent;
     const record = { 
       id: Date.now(), 
       type, 
       scouter: currentUser, 
-      event: selectedEvent, 
+      event: recordEvent, 
       data: standardizedData, 
       timestamp: new Date().toLocaleTimeString(),
       isTest: appMode === 'test',
@@ -646,13 +654,13 @@ const HuskyScout = () => {
               <input type="password" style={styles.input} value={loginPass} onChange={(e) => setLoginPass(e.target.value)} required />
             </div>
             {loginError && <span style={{ color: '#ef4444', fontSize: '12px', fontWeight: 'bold' }}>{loginError}</span>}
-            <button type="submit" style={styles.btn}>ACCESS SYSTEM</button>
+            <button type="submit" style={styles.btn}>Log In</button>
           </form>
           <div style={{ marginTop: '15px', fontSize: '12px', fontWeight: 'bold' }}>
             {isOnline ? (
-              <span style={{ color: theme.green }}>🟢 DEVICE IS ONLINE</span>
+              <span style={{ color: theme.green }}>Online Mode</span>
             ) : (
-              <span style={{ color: '#F59E0B' }}>⚠️ DEVICE IS OFFLINE (Bypassing credentials requires past verification)</span>
+              <span style={{ color: '#F59E0B' }}>Offline Mode</span>
             )}
           </div>
         </div>
@@ -669,9 +677,9 @@ const HuskyScout = () => {
         </p>
         <div style={{ marginTop: '8px', fontSize: '12px', fontWeight: 'bold' }}>
           {isOnline ? (
-            <span style={{ color: theme.green }}>🟢 ONLINE MODE</span>
+            <span style={{ color: theme.green }}>ONLINE MODE</span>
           ) : (
-            <span style={{ color: '#F59E0B' }}>🔴 OFFLINE MODE (Saving data locally)</span>
+            <span style={{ color: '#F59E0B' }}>OFFLINE MODE</span>
           )}
         </div>
       </header>
@@ -713,20 +721,18 @@ const HuskyScout = () => {
                 />
               ) : (
                 <div>
-                  {events.length > 0 ? (
-                    <select style={{ ...styles.input, marginTop: '5px' }} value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)}>
-                      {events.map(ev => <option key={ev.key} value={ev.key}>{ev.name}</option>)}
-                    </select>
-                  ) : (
-                    <input style={{ ...styles.input, marginTop: '5px' }} placeholder="Type Event Code (e.g. 2026utwv)" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)} />
-                  )}
+                  <input 
+                    style={{ ...styles.input, marginTop: '5px', backgroundColor: '#0F172A', color: theme.muted, cursor: 'not-allowed', border: `1px solid ${theme.border}` }} 
+                    value={activeEventDetails ? activeEventDetails.name : (selectedEvent || 'No active event detected')} 
+                    readOnly 
+                  />
                 </div>
               )}
 
               <div style={{ marginTop: '10px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center' }}>
-                {appMode === 'test' && <span style={{ color: '#F59E0B' }}>⚠️ TEST MODE ACTIVE (Data deletes daily)</span>}
-                {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>📅 PRE-EVENT MODE (Pit scouting only)</span>}
-                {appMode === 'active' && <span style={{ color: theme.green }}>🟢 EVENT ACTIVE (All features unlocked)</span>}
+                {appMode === 'test' && <span style={{ color: '#F59E0B' }}>TEST MODE (Data deletes daily)</span>}
+                {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>PRE-EVENT MODE (Pit scouting only)</span>}
+                {appMode === 'active' && <span style={{ color: theme.green }}>EVENT ACTIVE (All features unlocked)</span>}
               </div>
             </div>
             
@@ -1040,7 +1046,7 @@ const HuskyScout = () => {
               <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div>
             ) : (
               scoutedEventsInHistory.map(eventKey => {
-                const eventName = events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase();
+                const eventName = eventKey === 'test_event' ? 'TEST MODE' : (events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase());
                 const eventRecords = history.filter(h => h.event === eventKey);
                 const matchRecords = eventRecords.filter(h => h.type === 'match');
                 const pitRecords = eventRecords.filter(h => h.type === 'pit');
