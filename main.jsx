@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, doc, writeBatch } from 'firebase/firestore';
 
 const getEnv = (key) => {
   const p = typeof process !== 'undefined' && process.env ? process.env : {};
@@ -81,6 +81,7 @@ const HuskyScout = () => {
   const [matches, setMatches] = useState([]);
   const [history, setHistory] = useState([]);
   const [customOrders, setCustomOrders] = useState({});
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const [manualEventMode, setManualEventMode] = useState(false);
 
@@ -130,6 +131,27 @@ const HuskyScout = () => {
     return 'test';
   }, [activeEventDetails, todayStr, manualEventMode]);
 
+  const unsyncedCount = useMemo(() => {
+    return history.filter(h => !h.synced).length;
+  }, [history]);
+
+  useEffect(() => {
+    const handleOnlineStatus = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', handleOnlineStatus);
+    window.addEventListener('offline', handleOnlineStatus);
+    return () => {
+      window.removeEventListener('online', handleOnlineStatus);
+      window.removeEventListener('offline', handleOnlineStatus);
+    };
+  }, []);
+
+  useEffect(() => {
+    const savedUser = localStorage.getItem('husky_scout_current_user');
+    if (savedUser) {
+      setCurrentUser(savedUser);
+    }
+  }, []);
+
   useEffect(() => {
     const viewTitles = {
       menu: 'HuskyScout',
@@ -137,67 +159,146 @@ const HuskyScout = () => {
       pit: 'Pit Scouting - HuskyScout',
       picklist: 'Alliance Picklist - HuskyScout',
       history: 'Archive - HuskyScout',
+      ourMatches: 'Our Matches - HuskyScout',
     };
     document.title = viewTitles[view] || 'HuskyScout';
   }, [view]);
 
   useEffect(() => {
     const initFirebase = async () => {
+      let config = null;
       try {
-        const res = await fetch('/.netlify/functions/get-config');
-        if (res.ok) {
-          const config = await res.json();
-          if (config.apiKey) {
-            const app = initializeApp(config);
-            const firestoreDb = getFirestore(app);
-            setDb(firestoreDb);
-          }
+        const cached = localStorage.getItem('husky_scout_firebase_config');
+        if (cached) {
+          config = JSON.parse(cached);
         }
-      } catch (e) {
-        console.error(e);
+      } catch (e) {}
+
+      if (isOnline) {
+        try {
+          const res = await fetch('/.netlify/functions/get-config');
+          if (res.ok) {
+            const remoteConfig = await res.json();
+            if (remoteConfig.apiKey) {
+              config = remoteConfig;
+              localStorage.setItem('husky_scout_firebase_config', JSON.stringify(remoteConfig));
+            }
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      if (config && config.apiKey) {
+        try {
+          const app = initializeApp(config);
+          const firestoreDb = getFirestore(app);
+          setDb(firestoreDb);
+        } catch (e) {
+          console.error(e);
+        }
       }
     };
     initFirebase();
-  }, []);
+  }, [isOnline]);
 
-  useEffect(() => {
-    if (!db) return;
-    const fetchHistory = async () => {
+  const loadAndSyncHistory = async (firestoreDb) => {
+    let localData = [];
+    try {
+      localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]');
+    } catch (e) {}
+
+    let remoteData = [];
+    if (firestoreDb && isOnline) {
       try {
-        const querySnapshot = await getDocs(collection(db, 'scouting_data'));
-        const loadedHistory = [];
+        const querySnapshot = await getDocs(collection(firestoreDb, 'scouting_data'));
+        const batch = writeBatch(firestoreDb);
+        let hasDeletes = false;
         for (const docSnap of querySnapshot.docs) {
           const docData = docSnap.data();
           if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
-            try {
-              await deleteDoc(doc(db, 'scouting_data', docSnap.id));
-            } catch (err) {
-              console.error(err);
-            }
+            batch.delete(doc(firestoreDb, 'scouting_data', docSnap.id));
+            hasDeletes = true;
           } else {
-            loadedHistory.push({ ...docData, firestoreId: docSnap.id });
+            remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
         }
-        loadedHistory.sort((a, b) => (a.id || 0) - (b.id || 0));
-        setHistory(loadedHistory);
+        if (hasDeletes) {
+          await batch.commit();
+        }
       } catch (e) {
         console.error(e);
       }
-    };
-    fetchHistory();
-  }, [db, todayStr]);
+    }
+
+    const mergedMap = new Map();
+    localData.forEach(item => mergedMap.set(String(item.id), item));
+    remoteData.forEach(item => mergedMap.set(String(item.id), { ...item, synced: true }));
+
+    const mergedList = Array.from(mergedMap.values());
+    mergedList.sort((a, b) => (a.id || 0) - (b.id || 0));
+
+    setHistory(mergedList);
+    localStorage.setItem('husky_scout_history', JSON.stringify(mergedList));
+
+    if (firestoreDb && isOnline) {
+      const unsynced = mergedList.filter(item => !item.synced);
+      let listUpdated = false;
+      for (const item of unsynced) {
+        try {
+          const { synced, firestoreId, ...toUpload } = item;
+          await addDoc(collection(firestoreDb, 'scouting_data'), toUpload);
+          item.synced = true;
+          listUpdated = true;
+        } catch (e) {
+          console.error(e);
+          break;
+        }
+      }
+      if (listUpdated) {
+        const updatedList = mergedList.map(item => ({ ...item }));
+        setHistory(updatedList);
+        localStorage.setItem('husky_scout_history', JSON.stringify(updatedList));
+      }
+    }
+  };
+
+  useEffect(() => {
+    loadAndSyncHistory(db);
+  }, [db, todayStr, isOnline]);
 
   useEffect(() => {
     if (!currentUser) return;
     const fetchTBA = async () => {
+      let cachedEvents = [];
+      try {
+        const cached = localStorage.getItem('husky_scout_events');
+        if (cached) {
+          cachedEvents = JSON.parse(cached);
+          setEvents(cachedEvents);
+          if (cachedEvents.length > 0) {
+            const todayStrLocal = getLocalDateString();
+            const activeOrFuture = cachedEvents.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
+            setSelectedEvent(activeOrFuture ? activeOrFuture.key : cachedEvents[0].key);
+          }
+        }
+      } catch (e) {}
+
+      if (!isOnline) return;
+
       try {
         const res = await fetch('/.netlify/functions/get-events');
         if (res.ok) {
           const data = await res.json();
-          const filtered = data.filter(ev => ev.year >= CONFIG.YEAR - 1);
+          const todayStrLocal = getLocalDateString();
+          const filtered = data.filter(ev => {
+            const isCurrentOrFutureYear = ev.year >= CONFIG.YEAR;
+            const isNotPast = !ev.end_date || ev.end_date >= todayStrLocal;
+            return isCurrentOrFutureYear && isNotPast;
+          });
           setEvents(filtered);
+          localStorage.setItem('husky_scout_events', JSON.stringify(filtered));
           if (filtered.length > 0) {
-            const todayStrLocal = getLocalDateString();
             const activeOrFuture = filtered.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
             setSelectedEvent(activeOrFuture ? activeOrFuture.key : filtered[0].key);
           }
@@ -207,11 +308,22 @@ const HuskyScout = () => {
       }
     };
     fetchTBA();
-  }, [currentUser]);
+  }, [currentUser, isOnline]);
 
   useEffect(() => {
     if (!selectedEvent) return;
     const fetchMatches = async () => {
+      let cachedMatches = [];
+      try {
+        const cached = localStorage.getItem(`husky_scout_matches_${selectedEvent}`);
+        if (cached) {
+          cachedMatches = JSON.parse(cached);
+          setMatches(cachedMatches);
+        }
+      } catch (e) {}
+
+      if (!isOnline) return;
+
       try {
         const res = await fetch(`/.netlify/functions/get-matches?event=${selectedEvent}`);
         if (res.ok) {
@@ -221,24 +333,25 @@ const HuskyScout = () => {
               .filter(m => m.comp_level === 'qm')
               .sort((a, b) => a.match_number - b.match_number);
             setMatches(qmMatches);
+            localStorage.setItem(`husky_scout_matches_${selectedEvent}`, JSON.stringify(qmMatches));
           }
         } else {
-          setMatches([]);
+          if (cachedMatches.length === 0) setMatches([]);
         }
       } catch (e) {
         console.error(e);
-        setMatches([]);
+        if (cachedMatches.length === 0) setMatches([]);
       }
     };
     fetchMatches();
-  }, [selectedEvent]);
+  }, [selectedEvent, isOnline]);
 
   const teamsInMatch = useMemo(() => {
     const foundMatch = matches.find(m => String(m.match_number) === String(matchData.match));
     return foundMatch 
       ? [
-          ...foundMatch.alliances.red.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'red' })),
-          ...foundMatch.alliances.blue.teams.map(t => ({ team: t.replace(/^frc/, ''), alliance: 'blue' }))
+          ...foundMatch.alliances.red.teams.map(t => ({ team: String(t.replace(/^frc/, '')).trim(), alliance: 'red' })),
+          ...foundMatch.alliances.blue.teams.map(t => ({ team: String(t.replace(/^frc/, '')).trim(), alliance: 'blue' }))
         ]
       : [];
   }, [matches, matchData.match]);
@@ -255,27 +368,44 @@ const HuskyScout = () => {
     }
   }, [teamsInMatch]);
 
+  const ourMatches = useMemo(() => {
+    return matches.filter(m => {
+      const red = m.alliances?.red?.teams || [];
+      const blue = m.alliances?.blue?.teams || [];
+      return red.some(t => String(t.replace(/^frc/, '')).trim() === '4585') ||
+             blue.some(t => String(t.replace(/^frc/, '')).trim() === '4585');
+    });
+  }, [matches]);
+
+  const scoutedEventsInHistory = useMemo(() => {
+    const set = new Set();
+    history.forEach(h => {
+      if (h.event) set.add(h.event);
+    });
+    return Array.from(set);
+  }, [history]);
+
   const picklist = useMemo(() => {
     if (!selectedEvent) return [];
 
     const uniqueTeams = new Set();
     matches.forEach(m => {
       if (m.alliances?.red?.teams) {
-        m.alliances.red.teams.forEach(t => uniqueTeams.add(t.replace(/^frc/, '')));
+        m.alliances.red.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
       }
       if (m.alliances?.blue?.teams) {
-        m.alliances.blue.teams.forEach(t => uniqueTeams.add(t.replace(/^frc/, '')));
+        m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
       }
     });
     history.forEach(h => {
       if (h.event === selectedEvent && h.data?.team) {
-        uniqueTeams.add(String(h.data.team));
+        uniqueTeams.add(String(h.data.team).trim());
       }
     });
     const allTeams = Array.from(uniqueTeams);
 
     const teamsWithStats = allTeams.map(t => {
-      const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team) === String(t));
+      const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team).trim() === String(t).trim());
       
       const avgOff = teamMatches.length > 0 
         ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1))
@@ -300,12 +430,12 @@ const HuskyScout = () => {
       : customOrders[selectedEvent];
 
     if (activeOrder) {
-      const savedSet = new Set(activeOrder);
+      const savedSet = new Set(activeOrder.map(val => String(val).trim()));
       const inSaved = activeOrder
-        .map(tNum => teamsWithStats.find(t => String(t.team) === String(tNum)))
+        .map(tNum => teamsWithStats.find(t => String(t.team).trim() === String(tNum).trim()))
         .filter(Boolean);
       const notInSaved = teamsWithStats
-        .filter(t => !savedSet.has(String(t.team)))
+        .filter(t => !savedSet.has(String(t.team).trim()))
         .sort((a, b) => b.hybrid - a.hybrid);
       return [...inSaved, ...notInSaved];
     } else {
@@ -322,7 +452,7 @@ const HuskyScout = () => {
     
     setCustomOrders(prev => ({
       ...prev,
-      [selectedEvent]: updated.map(t => String(t.team))
+      [selectedEvent]: updated.map(t => String(t.team).trim())
     }));
   };
 
@@ -337,6 +467,10 @@ const HuskyScout = () => {
   };
 
   const runRemoteAiAnalysis = async () => {
+    if (!isOnline) {
+      setAiError('AI generation requires an active network connection.');
+      return;
+    }
     setLoadingAi(true);
     setAiError('');
     setAiSuggestions('');
@@ -346,7 +480,7 @@ const HuskyScout = () => {
       }
 
       const payloadData = picklist.map((item, index) => {
-        const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team) === String(item.team));
+        const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team).trim() === String(item.team).trim());
         const pitRecords = teamHistory.filter(h => h.type === 'pit');
         const matchRecords = teamHistory.filter(h => h.type === 'match');
         
@@ -389,7 +523,7 @@ const HuskyScout = () => {
 
       setAiSuggestions(parsed.report || 'No analysis report returned.');
       if (Array.isArray(parsed.recommended_order)) {
-        const stringifiedOrder = parsed.recommended_order.map(String);
+        const stringifiedOrder = parsed.recommended_order.map(val => String(val).trim());
         setAiRecommendedOrder(stringifiedOrder);
         setPreviewAiOrder(true);
       }
@@ -407,6 +541,17 @@ const HuskyScout = () => {
       setLoginError('No user selected or configured');
       return;
     }
+
+    if (!isOnline) {
+      const offlinePassCached = localStorage.getItem('husky_scout_pass_verified');
+      if (offlinePassCached === 'true') {
+        setCurrentUser(loginName);
+        localStorage.setItem('husky_scout_current_user', loginName);
+      } else {
+        setLoginError('Offline login requires at least one previous online verification on this device.');
+      }
+      return;
+    }
     
     try {
       const res = await fetch('/.netlify/functions/verify-password', {
@@ -417,6 +562,8 @@ const HuskyScout = () => {
       const result = await res.json();
       if (res.ok && result.success) {
         setCurrentUser(loginName);
+        localStorage.setItem('husky_scout_current_user', loginName);
+        localStorage.setItem('husky_scout_pass_verified', 'true');
       } else {
         setLoginError(result.error || 'Incorrect password');
       }
@@ -425,22 +572,37 @@ const HuskyScout = () => {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('husky_scout_current_user');
+    setCurrentUser(null);
+    setView('menu');
+  };
+
   const saveToHistory = async (type, data) => {
+    const standardizedData = { ...data, team: String(data.team).trim() };
     const record = { 
       id: Date.now(), 
       type, 
       scouter: currentUser, 
       event: selectedEvent, 
-      data, 
+      data: standardizedData, 
       timestamp: new Date().toLocaleTimeString(),
       isTest: appMode === 'test',
-      dateString: todayStr
+      dateString: todayStr,
+      synced: false
     };
+
     const updated = [...history, record];
     setHistory(updated);
-    if (db) {
+    localStorage.setItem('husky_scout_history', JSON.stringify(updated));
+
+    if (db && isOnline) {
       try {
-        await addDoc(collection(db, 'scouting_data'), record);
+        const { synced, ...toUpload } = record;
+        await addDoc(collection(db, 'scouting_data'), toUpload);
+        const syncedList = updated.map(item => item.id === record.id ? { ...item, synced: true } : item);
+        setHistory(syncedList);
+        localStorage.setItem('husky_scout_history', JSON.stringify(syncedList));
       } catch (e) {
         console.error(e);
       }
@@ -486,6 +648,13 @@ const HuskyScout = () => {
             {loginError && <span style={{ color: '#ef4444', fontSize: '12px', fontWeight: 'bold' }}>{loginError}</span>}
             <button type="submit" style={styles.btn}>ACCESS SYSTEM</button>
           </form>
+          <div style={{ marginTop: '15px', fontSize: '12px', fontWeight: 'bold' }}>
+            {isOnline ? (
+              <span style={{ color: theme.green }}>🟢 DEVICE IS ONLINE</span>
+            ) : (
+              <span style={{ color: '#F59E0B' }}>⚠️ DEVICE IS OFFLINE (Bypassing credentials requires past verification)</span>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -495,10 +664,35 @@ const HuskyScout = () => {
     <div style={styles.container}>
       <header style={{ textAlign: 'center', marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: '900', margin: 0 }}>HUSKY<span style={{ color: theme.green }}>SCOUT</span></h1>
-        <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: theme.muted }}>Active: {currentUser}</p>
+        <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: theme.muted }}>
+          Active: {currentUser} | <span onClick={handleLogout} style={{ color: '#EF4444', cursor: 'pointer', textDecoration: 'underline' }}>Logout</span>
+        </p>
+        <div style={{ marginTop: '8px', fontSize: '12px', fontWeight: 'bold' }}>
+          {isOnline ? (
+            <span style={{ color: theme.green }}>🟢 ONLINE MODE</span>
+          ) : (
+            <span style={{ color: '#F59E0B' }}>🔴 OFFLINE MODE (Saving data locally)</span>
+          )}
+        </div>
       </header>
 
       <main style={{ maxWidth: '500px', margin: '0 auto' }}>
+        {unsyncedCount > 0 && (
+          <div style={{ ...styles.card, border: '1px solid #F59E0B', textAlign: 'center', padding: '12px', marginBottom: '16px' }}>
+            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#F59E0B' }}>
+              {unsyncedCount} UNSYNCED RECORDS SAVED LOCALLY
+            </span>
+            {isOnline && db && (
+              <button 
+                onClick={() => loadAndSyncHistory(db)} 
+                style={{ ...styles.btn, marginTop: '8px', padding: '10px', fontSize: '12px', backgroundColor: '#F59E0B', color: 'black' }}
+              >
+                SYNC DATA NOW
+              </button>
+            )}
+          </div>
+        )}
+
         {view === 'menu' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
             <div style={styles.card}>
@@ -564,7 +758,9 @@ const HuskyScout = () => {
               {appMode === 'preevent' ? 'ALLIANCE PICKLIST (LOCKED)' : 'ALLIANCE PICKLIST'}
             </button>
 
-            <button onClick={() => setView('history')} style={styles.btnOutline}>VIEW HISTORY ({history.length})</button>
+            <button onClick={() => setView('ourMatches')} style={{ ...styles.btn, backgroundColor: '#EC4899', color: 'white' }}>OUR MATCHES (4585)</button>
+
+            <button onClick={() => setView('history')} style={styles.btnOutline}>VIEW ARCHIVE ({scoutedEventsInHistory.length} Events)</button>
           </div>
         )}
 
@@ -586,7 +782,7 @@ const HuskyScout = () => {
                     <select
                       style={styles.input}
                       value={matchData.team}
-                      onChange={e => setMatchData({ ...matchData, team: e.target.value })}
+                      onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })}
                       required
                     >
                       <option value="" disabled>Select Team...</option>
@@ -607,7 +803,7 @@ const HuskyScout = () => {
                       style={styles.input}
                       placeholder="Type team #"
                       value={matchData.team}
-                      onChange={e => setMatchData({ ...matchData, team: e.target.value })}
+                      onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })}
                       required
                     />
                   )}
@@ -651,7 +847,7 @@ const HuskyScout = () => {
             <div style={styles.card}>
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted }}>TEAM #</label>
-                <input type="number" style={styles.input} value={pitData.team} onChange={e => setPitData({ ...pitData, team: e.target.value })} required />
+                <input type="number" style={styles.input} value={pitData.team} onChange={e => setPitData({ ...pitData, team: String(e.target.value).trim() })} required />
               </div>
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted }}>DRIVETRAIN</label>
@@ -733,17 +929,17 @@ const HuskyScout = () => {
                     <div style={{ display: 'flex', gap: '6px' }}>
                       <button 
                         type="button"
-                        disabled={index === 0} 
+                        disabled={index === 0 || previewAiOrder} 
                         onClick={() => moveTeam(index, 'up')} 
-                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: index === 0 ? theme.border : 'white', fontWeight: 'bold', cursor: index === 0 ? 'not-allowed' : 'pointer' }}
+                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === 0 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === 0 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
                       >
                         ▲
                       </button>
                       <button 
                         type="button"
-                        disabled={index === picklist.length - 1} 
+                        disabled={index === picklist.length - 1 || previewAiOrder} 
                         onClick={() => moveTeam(index, 'down')} 
-                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: index === picklist.length - 1 ? theme.border : 'white', fontWeight: 'bold', cursor: index === picklist.length - 1 ? 'not-allowed' : 'pointer' }}
+                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === picklist.length - 1 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === picklist.length - 1 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
                       >
                         ▼
                       </button>
@@ -784,42 +980,128 @@ const HuskyScout = () => {
           </div>
         )}
 
+        {view === 'ourMatches' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}>
+              <button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
+              <span style={{ fontWeight: 'bold', color: '#EC4899' }}>4585 MATCHES</span>
+            </div>
+            {ourMatches.length === 0 ? (
+              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No matches loaded for team 4585 at this event.</div>
+            ) : (
+              ourMatches.map(m => {
+                const isRed = m.alliances.red.teams.some(t => String(t.replace(/^frc/, '')).trim() === '4585');
+                return (
+                  <div key={m.match_number} style={{ ...styles.card, borderLeft: `4px solid ${isRed ? '#EF4444' : '#3B82F6'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <span style={{ fontWeight: 'bold' }}>Match QM {m.match_number}</span>
+                      <span style={{ fontSize: '12px', color: isRed ? '#EF4444' : '#3B82F6', fontWeight: 'bold' }}>
+                        {isRed ? 'RED ALLIANCE' : 'BLUE ALLIANCE'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#EF44441F', border: '1px solid #EF44443F' }}>
+                        <div style={{ fontSize: '10px', color: '#EF4444', fontWeight: 'bold', marginBottom: '4px' }}>RED</div>
+                        {m.alliances.red.teams.map(t => {
+                          const num = String(t.replace(/^frc/, '')).trim();
+                          return (
+                            <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>
+                              Team {num} {num === '4585' && '★'}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#3B82F61F', border: '1px solid #3B82F63F' }}>
+                        <div style={{ fontSize: '10px', color: '#3B82F6', fontWeight: 'bold', marginBottom: '4px' }}>BLUE</div>
+                        {m.alliances.blue.teams.map(t => {
+                          const num = String(t.replace(/^frc/, '')).trim();
+                          return (
+                            <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>
+                              Team {num} {num === '4585' && '★'}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
         {view === 'history' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}>
               <button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
               <span style={{ fontWeight: 'bold', color: theme.green }}>ARCHIVE</span>
             </div>
-            {history.length === 0 ? (
+            {scoutedEventsInHistory.length === 0 ? (
               <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div>
             ) : (
-              [...history].reverse().map(record => (
-                <div key={record.id} style={{ ...styles.card, borderLeft: `4px solid ${record.type === 'pit' ? '#3B82F6' : theme.green}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
-                    <span>
-                      {record.type.toUpperCase()} | Team {record.data.team}
-                      {record.type === 'match' && ` (${calculateScore(record.data.autoPieces, record.data.teleopPieces, record.data.climb)} pts)`}
-                    </span>
-                    <span>{record.timestamp}</span>
+              scoutedEventsInHistory.map(eventKey => {
+                const eventName = events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase();
+                const eventRecords = history.filter(h => h.event === eventKey);
+                const matchRecords = eventRecords.filter(h => h.type === 'match');
+                const pitRecords = eventRecords.filter(h => h.type === 'pit');
+
+                return (
+                  <div key={eventKey} style={{ ...styles.card, marginBottom: '20px' }}>
+                    <h2 style={{ fontSize: '18px', color: theme.green, margin: '0 0 15px 0', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>
+                      {eventName}
+                    </h2>
+                    
+                    <div style={{ marginBottom: '20px' }}>
+                      <h3 style={{ fontSize: '14px', color: '#3B82F6', margin: '0 0 10px 0', fontWeight: '900' }}>PIT SCOUTING</h3>
+                      {pitRecords.length === 0 ? (
+                        <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No pit records for this event.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {pitRecords.map(record => (
+                            <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
+                                <span style={{ fontWeight: 'bold', color: '#3B82F6' }}>Team {record.data.team}</span>
+                                <span>{record.timestamp}</span>
+                              </div>
+                              <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                                <div>Drivetrain: {record.data.drivetrain}</div>
+                                <div>Mechanism: {record.data.mechanism}</div>
+                                {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <h3 style={{ fontSize: '14px', color: theme.green, margin: '0 0 10px 0', fontWeight: '900' }}>MATCH SCOUTING</h3>
+                      {matchRecords.length === 0 ? (
+                        <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No match records for this event.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {matchRecords.map(record => (
+                            <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
+                                <span style={{ fontWeight: 'bold', color: theme.green }}>Match {record.data.match} | Team {record.data.team}</span>
+                                <span>{record.timestamp}</span>
+                              </div>
+                              <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                                <div>Auto: {record.data.autoPieces} | Teleop: {record.data.teleopPieces} | Climb: {record.data.climb ? 'Yes' : 'No'}</div>
+                                <div>Defense Quality: {record.data.defenseQuality} (Fouls: {record.data.defenseFouls})</div>
+                                <div style={{ fontWeight: 'bold', color: theme.green, marginTop: '4px' }}>
+                                  Est. Score: {calculateScore(record.data.autoPieces, record.data.teleopPieces, record.data.climb)} pts
+                                </div>
+                                {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ marginTop: '8px', fontSize: '13px', color: '#E2E8F0', lineHeight: '1.4' }}>
-                    {record.type === 'match' ? (
-                      <div>
-                        <div>Match {record.data.match}</div>
-                        <div>Auto: {record.data.autoPieces} | Teleop: {record.data.teleopPieces} | Climb: {record.data.climb ? 'Yes' : 'No'}</div>
-                        <div>Defense Quality: {record.data.defenseQuality} (Fouls: {record.data.defenseFouls})</div>
-                        {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
-                      </div>
-                    ) : (
-                      <div>
-                        <div>Drivetrain: {record.data.drivetrain}</div>
-                        <div>Mechanism: {record.data.mechanism}</div>
-                        {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
