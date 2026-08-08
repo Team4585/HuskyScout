@@ -215,6 +215,11 @@ const HuskyScout = () => {
       localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]');
     } catch (e) {}
 
+    localData = localData.filter(item => {
+      const isOldTest = item.isTest && item.dateString && item.dateString !== todayStr;
+      return !isOldTest;
+    });
+
     let remoteData = [];
     if (firestoreDb && isOnline) {
       try {
@@ -637,7 +642,7 @@ const HuskyScout = () => {
   if (!currentUser) {
     return (
       <div style={styles.container}>
-        <div style={{ maxWidth: '400px', margin: '40px auto', ...styles.card, textAlign: 'center' }}>
+        <div style={{ maxWidth: '400px', margin: '40px auto', ...styles.card, textStyle: 'center', textAlign: 'center' }}>
           <h1 style={{ fontSize: '24px', fontWeight: '900', margin: '0 0 20px 0' }}>HUSKY<span style={{ color: theme.green }}>SCOUT</span></h1>
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
             <div>
