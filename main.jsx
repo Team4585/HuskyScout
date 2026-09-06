@@ -86,6 +86,7 @@ const HuskyScout = () => {
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState('');
   const [matches, setMatches] = useState([]);
+  const [oprs, setOprs] = useState({});
   const [history, setHistory] = useState([]);
   const [customOrders, setCustomOrders] = useState({});
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -105,8 +106,10 @@ const HuskyScout = () => {
   const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState('');
 
+  const [expandedTeam, setExpandedTeam] = useState(null);
+
   const emptyMatch = { match: '', team: '', autoPieces: 0, teleopPieces: 0, climb: false, defenseQuality: 0, defenseFouls: 0, notes: '' };
-  const emptyPit = { team: '', drivetrain: 'Swerve', mechanism: 'Elevator', notes: '' };
+  const emptyPit = { team: '', drivetrain: 'Swerve', mechanism: 'Elevator', notes: '', photos: [] };
   const [matchData, setMatchData] = useState({ ...emptyMatch });
   const [pitData, setPitData] = useState({ ...emptyPit });
 
@@ -356,6 +359,42 @@ const HuskyScout = () => {
     fetchMatches();
   }, [selectedEvent, isOnline]);
 
+  // Fetch OPRs
+  useEffect(() => {
+    if (!selectedEvent) return;
+    const fetchOprs = async () => {
+      let cachedOprs = {};
+      try {
+        const cached = localStorage.getItem(`husky_scout_oprs_${selectedEvent}`);
+        if (cached) {
+          cachedOprs = JSON.parse(cached);
+          setOprs(cachedOprs);
+        }
+      } catch (e) {}
+
+      if (!isOnline) return;
+
+      try {
+        const res = await fetch(`/.netlify/functions/get-oprs?event=${selectedEvent}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.oprs) {
+            const normalized = {};
+            Object.keys(data.oprs).forEach(k => {
+              const teamNum = String(k.replace(/^frc/, '')).trim();
+              normalized[teamNum] = parseFloat(data.oprs[k].toFixed(1));
+            });
+            setOprs(normalized);
+            localStorage.setItem(`husky_scout_oprs_${selectedEvent}`, JSON.stringify(normalized));
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchOprs();
+  }, [selectedEvent, isOnline]);
+
   const teamsInMatch = useMemo(() => {
     const foundMatch = matches.find(m => String(m.match_number) === String(matchData.match));
     return foundMatch 
@@ -589,6 +628,32 @@ const HuskyScout = () => {
     localStorage.removeItem('husky_scout_current_user');
     setCurrentUser(null);
     setView('menu');
+  };
+
+  const handlePhotoUpload = (e) => {
+    const files = Array.from(e.target.files);
+    const currentPhotos = pitData.photos || [];
+    const remainingSlots = 3 - currentPhotos.length;
+    const filesToProcess = files.slice(0, remainingSlots);
+
+    filesToProcess.forEach(file => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPitData(prev => ({
+          ...prev,
+          photos: [...(prev.photos || []), reader.result].slice(0, 3)
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removePhoto = (index) => {
+    setPitData(prev => ({
+      ...prev,
+      photos: (prev.photos || []).filter((_, i) => i !== index)
+    }));
   };
 
   const saveToHistory = async (type, data) => {
@@ -877,6 +942,33 @@ const HuskyScout = () => {
                   ))}
                 </div>
               </div>
+
+              {/* Pit Photos Capture Input */}
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '10px', color: theme.muted, display: 'block', marginBottom: '8px' }}>PHOTOS (MAX 3)</label>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {(pitData.photos || []).map((photo, index) => (
+                    <div key={index} style={{ position: 'relative', width: '80px', height: '80px', borderRadius: '8px', border: `1px solid ${theme.border}`, overflow: 'hidden' }}>
+                      <img src={photo} alt={`pit-${index}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <button 
+                        type="button" 
+                        onClick={() => removePhoto(index)} 
+                        style={{ position: 'absolute', top: '2px', right: '2px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '50%', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {(pitData.photos || []).length < 3 && (
+                    <label style={{ width: '80px', height: '80px', borderRadius: '8px', border: `2px dashed ${theme.border}`, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backgroundColor: '#0F172A' }}>
+                      <span style={{ fontSize: '18px', color: theme.muted }}>+</span>
+                      <span style={{ fontSize: '9px', color: theme.muted }}>Add Image</span>
+                      <input type="file" accept="image/*" capture="environment" onChange={handlePhotoUpload} style={{ display: 'none' }} multiple />
+                    </label>
+                  )}
+                </div>
+              </div>
+
               <textarea style={{ ...styles.input, height: '80px', resize: 'none' }} placeholder="Robot specs, weight, auto capabilities, etc..." value={pitData.notes} onChange={e => setPitData({ ...pitData, notes: e.target.value })} />
             </div>
             <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>SUBMIT & SAVE PIT</button>
@@ -927,37 +1019,114 @@ const HuskyScout = () => {
               <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No teams found for this event yet. Enter match schedule or scout teams to populate.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {picklist.map((item, index) => (
-                  <div key={item.team} style={{ ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                      <span style={{ fontSize: '16px', fontWeight: '900', color: theme.green, minWidth: '24px' }}>#{index + 1}</span>
-                      <div>
-                        <span style={{ fontSize: '16px', fontWeight: 'bold' }}>Team {item.team}</span>
-                        <div style={{ fontSize: '11px', color: theme.muted, marginTop: '2px' }}>
-                          Off Avg: {item.avgOff} | Def Avg: {item.avgDef} | Hybrid: {item.hybrid}
+                {picklist.map((item, index) => {
+                  const isExpanded = expandedTeam === item.team;
+                  const eventKey = appMode === 'test' ? 'test_event' : selectedEvent;
+                  const teamHistory = history.filter(h => h.event === eventKey && String(h.data.team).trim() === String(item.team).trim());
+                  const pits = teamHistory.filter(h => h.type === 'pit');
+                  const matchesFiltered = teamHistory.filter(h => h.type === 'match');
+                  const teamOpr = oprs[item.team] !== undefined ? oprs[item.team] : 'N/A';
+
+                  return (
+                    <div 
+                      key={item.team} 
+                      style={{ ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '4px' }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        {/* Expandable team info header row */}
+                        <div 
+                          onClick={() => setExpandedTeam(isExpanded ? null : item.team)}
+                          style={{ display: 'flex', alignItems: 'center', gap: '15px', cursor: 'pointer', flex: 1 }}
+                        >
+                          <span style={{ fontSize: '16px', fontWeight: '900', color: theme.green, minWidth: '24px' }}>#{index + 1}</span>
+                          <div>
+                            <span style={{ fontSize: '16px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              Team {item.team}
+                              <span style={{ fontSize: '10px', color: theme.muted, fontWeight: 'normal' }}>
+                                {isExpanded ? '▲ hide details' : '▼ show details'}
+                              </span>
+                            </span>
+                            <div style={{ fontSize: '11px', color: theme.muted, marginTop: '2px' }}>
+                              Off Avg: {item.avgOff} | Def Avg: {item.avgDef} | Hybrid: {item.hybrid}
+                            </div>
+                            {oprs[item.team] !== undefined && (
+                              <div style={{ fontSize: '11px', color: theme.green, marginTop: '2px', fontWeight: '600' }}>
+                                TBA OPR: {oprs[item.team]}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Reordering picklist controls */}
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button 
+                            type="button"
+                            disabled={index === 0 || previewAiOrder} 
+                            onClick={(e) => { e.stopPropagation(); moveTeam(index, 'up'); }} 
+                            style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === 0 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === 0 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
+                          >
+                            ▲
+                          </button>
+                          <button 
+                            type="button"
+                            disabled={index === picklist.length - 1 || previewAiOrder} 
+                            onClick={(e) => { e.stopPropagation(); moveTeam(index, 'down'); }} 
+                            style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === picklist.length - 1 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === picklist.length - 1 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
+                          >
+                            ▼
+                          </button>
                         </div>
                       </div>
+
+                      {/* Expanding details summary panel */}
+                      {isExpanded && (
+                        <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '12px', marginTop: '8px' }}>
+                          {pits.length > 0 ? (
+                            <div style={{ marginBottom: '12px' }}>
+                              <h4 style={{ margin: '0 0 6px 0', fontSize: '11px', color: '#3B82F6', fontWeight: '900' }}>PIT DATA</h4>
+                              {pits.map(p => (
+                                <div key={p.id} style={{ fontSize: '12px', backgroundColor: '#0F172A', padding: '10px', borderRadius: '8px', border: `1px solid ${theme.border}` }}>
+                                  <div>Drivetrain: {p.data.drivetrain} | Mechanism: {p.data.mechanism}</div>
+                                  {p.data.notes && <div style={{ fontStyle: 'italic', color: theme.muted, marginTop: '4px' }}>"{p.data.notes}"</div>}
+                                  {p.data.photos && p.data.photos.length > 0 && (
+                                    <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                                      {p.data.photos.map((pht, idx) => (
+                                        <img key={idx} src={pht} alt="pit-scout-img" style={{ width: '60px', height: '60px', borderRadius: '6px', objectFit: 'cover', border: `1px solid ${theme.border}` }} />
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '11px', color: theme.muted, marginBottom: '12px', fontStyle: 'italic' }}>No pit data registered.</div>
+                          )}
+
+                          {matchesFiltered.length > 0 ? (
+                            <div>
+                              <h4 style={{ margin: '0 0 6px 0', fontSize: '11px', color: theme.green, fontWeight: '900' }}>MATCH HISTORY ({matchesFiltered.length})</h4>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {matchesFiltered.map(m => (
+                                  <div key={m.id} style={{ fontSize: '12px', backgroundColor: '#0F172A', padding: '10px', borderRadius: '8px', border: `1px solid ${theme.border}` }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
+                                      <span>QM {m.data.match}</span>
+                                      <span style={{ color: theme.green }}>Est. Score: {calculateScore(m.data.autoPieces, m.data.teleopPieces, m.data.climb)} pts</span>
+                                    </div>
+                                    <div style={{ marginTop: '2px' }}>Auto: {m.data.autoPieces} | Teleop: {m.data.teleopPieces} | Climb: {m.data.climb ? 'Yes' : 'No'}</div>
+                                    <div>Def Quality: {m.data.defenseQuality} | Fouls: {m.data.defenseFouls}</div>
+                                    {m.data.notes && <div style={{ fontStyle: 'italic', color: theme.muted, marginTop: '4px' }}>"{m.data.notes}"</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '11px', color: theme.muted, fontStyle: 'italic' }}>No matches recorded.</div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button 
-                        type="button"
-                        disabled={index === 0 || previewAiOrder} 
-                        onClick={() => moveTeam(index, 'up')} 
-                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === 0 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === 0 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
-                      >
-                        ▲
-                      </button>
-                      <button 
-                        type="button"
-                        disabled={index === picklist.length - 1 || previewAiOrder} 
-                        onClick={() => moveTeam(index, 'down')} 
-                        style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === picklist.length - 1 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === picklist.length - 1 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
-                      >
-                        ▼
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -1079,6 +1248,13 @@ const HuskyScout = () => {
                                 <div>Drivetrain: {record.data.drivetrain}</div>
                                 <div>Mechanism: {record.data.mechanism}</div>
                                 {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                                {record.data.photos && record.data.photos.length > 0 && (
+                                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                                    {record.data.photos.map((pht, idx) => (
+                                      <img key={idx} src={pht} alt="pit-scout" style={{ width: '60px', height: '60px', borderRadius: '6px', objectFit: 'cover' }} />
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           ))}
