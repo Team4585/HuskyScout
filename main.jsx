@@ -22,7 +22,7 @@ const CONFIG = {
   YEAR: new Date().getFullYear(),
 };
 
-const theme = { green: '#22C55E', bg: '#0F172A', card: '#1E293B', text: '#F8FAFC', muted: '#94A3B8', border: '#334155' };
+const theme = { green: '#22C55E', bg: '#0F172A', card: '#1E293B', text: '#F8FAFC', muted: '#94A3B8', border: '#334155', yellow: '#EAB308', red: '#EF4444' };
 
 const styles = {
   container: { backgroundColor: theme.bg, minHeight: '100vh', padding: '16px', color: theme.text, fontFamily: 'sans-serif', boxSizing: 'border-box' },
@@ -87,17 +87,20 @@ const HuskyScout = () => {
   const [selectedEvent, setSelectedEvent] = useState('');
   const [matches, setMatches] = useState([]);
   const [oprs, setOprs] = useState({});
+  const [rankings, setRankings] = useState([]);
   const [history, setHistory] = useState([]);
   const [customOrders, setCustomOrders] = useState({});
+  const [teamCategories, setTeamCategories] = useState({}); // 'first', 'second', 'dnp'
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const [manualEventMode, setManualEventMode] = useState(false);
 
   const [aiStrategy, setAiStrategy] = useState('balanced');
-  const [ourRobotSpecs, setOurRobotSpecs] = useState('Swerve drive, elevator mechanism, high-scoring offensive, capable of climb.');
+  const [ourInfo, setOurInfo] = useState('Swerve drive, 20bps drum shooter, slow intake, no climb');
   
   const [aiSuggestions, setAiSuggestions] = useState('');
   const [aiRecommendedOrder, setAiRecommendedOrder] = useState([]);
+  const [aiRecommendedCategories, setAiRecommendedCategories] = useState({});
   const [previewAiOrder, setPreviewAiOrder] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [aiError, setAiError] = useState('');
@@ -109,7 +112,7 @@ const HuskyScout = () => {
   const [expandedTeam, setExpandedTeam] = useState(null);
 
   const emptyMatch = { match: '', team: '', autoPieces: 0, teleopPieces: 0, climb: false, defenseQuality: 0, defenseFouls: 0, notes: '' };
-  const emptyPit = { team: '', drivetrain: 'Swerve', mechanism: 'Elevator', notes: '', photos: [] };
+  const emptyPit = { team: '', drivetrain: 'Swerve', mechanism: 'No Shooter', notes: '', photos: [] };
   const [matchData, setMatchData] = useState({ ...emptyMatch });
   const [pitData, setPitData] = useState({ ...emptyPit });
 
@@ -157,17 +160,34 @@ const HuskyScout = () => {
 
   useEffect(() => {
     const savedUser = localStorage.getItem('husky_scout_current_user');
-    if (savedUser) {
-      setCurrentUser(savedUser);
-    }
+    if (savedUser) setCurrentUser(savedUser);
+
+    try {
+      const savedCats = localStorage.getItem('husky_scout_categories');
+      if (savedCats) setTeamCategories(JSON.parse(savedCats));
+      const savedOrders = localStorage.getItem('husky_scout_orders');
+      if (savedOrders) setCustomOrders(JSON.parse(savedOrders));
+    } catch (e) {}
   }, []);
+
+  useEffect(() => {
+    if (Object.keys(teamCategories).length > 0) {
+      localStorage.setItem('husky_scout_categories', JSON.stringify(teamCategories));
+    }
+  }, [teamCategories]);
+
+  useEffect(() => {
+    if (Object.keys(customOrders).length > 0) {
+      localStorage.setItem('husky_scout_orders', JSON.stringify(customOrders));
+    }
+  }, [customOrders]);
 
   useEffect(() => {
     const viewTitles = {
       menu: 'HuskyScout',
       match: 'Match Scouting - HuskyScout',
       pit: 'Pit Scouting - HuskyScout',
-      picklist: 'Alliance Picklist - HuskyScout',
+      picklist: 'Picklist - HuskyScout',
       history: 'Archive - HuskyScout',
       ourMatches: 'Our Matches - HuskyScout',
     };
@@ -359,7 +379,6 @@ const HuskyScout = () => {
     fetchMatches();
   }, [selectedEvent, isOnline]);
 
-  // Fetch OPRs
   useEffect(() => {
     if (!selectedEvent) return;
     const fetchOprs = async () => {
@@ -393,6 +412,36 @@ const HuskyScout = () => {
       }
     };
     fetchOprs();
+  }, [selectedEvent, isOnline]);
+
+  useEffect(() => {
+    if (!selectedEvent) return;
+    const fetchRankings = async () => {
+      let cachedRankings = [];
+      try {
+        const cached = localStorage.getItem(`husky_scout_rankings_${selectedEvent}`);
+        if (cached) {
+          cachedRankings = JSON.parse(cached);
+          setRankings(cachedRankings);
+        }
+      } catch (e) {}
+
+      if (!isOnline) return;
+
+      try {
+        const res = await fetch(`/.netlify/functions/get-rankings?event=${selectedEvent}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setRankings(data);
+            localStorage.setItem(`husky_scout_rankings_${selectedEvent}`, JSON.stringify(data));
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchRankings();
   }, [selectedEvent, isOnline]);
 
   const teamsInMatch = useMemo(() => {
@@ -505,9 +554,28 @@ const HuskyScout = () => {
     }));
   };
 
+  const toggleCategory = (team, cat) => {
+    setTeamCategories(prev => {
+      const eventCats = prev[selectedEvent] || {};
+      const newCat = eventCats[team] === cat ? null : cat;
+      return {
+        ...prev,
+        [selectedEvent]: {
+          ...eventCats,
+          [team]: newCat
+        }
+      };
+    });
+  };
+
   const resetPicklist = () => {
-    if (window.confirm("Reset picklist order back to Hybrid score ranking?")) {
+    if (window.confirm("Reset picklist order and categories?")) {
       setCustomOrders(prev => {
+        const next = { ...prev };
+        delete next[selectedEvent];
+        return next;
+      });
+      setTeamCategories(prev => {
         const next = { ...prev };
         delete next[selectedEvent];
         return next;
@@ -517,7 +585,7 @@ const HuskyScout = () => {
 
   const runRemoteAiAnalysis = async () => {
     if (!isOnline) {
-      setAiError('AI generation requires an active network connection.');
+      setAiError('AI picklist needs an internet connection.');
       return;
     }
     setLoadingAi(true);
@@ -525,7 +593,7 @@ const HuskyScout = () => {
     setAiSuggestions('');
     try {
       if (picklist.length === 0) {
-        throw new Error('No active teams are registered in the current event picklist.');
+        throw new Error('No teams are in the current event.');
       }
 
       const payloadData = picklist.map((item, index) => {
@@ -546,31 +614,41 @@ const HuskyScout = () => {
   - Match Notes: ${matchNotes || 'None'}`;
       }).join('\n\n');
 
+      const rankingsSummary = rankings && rankings.length > 0 
+        ? rankings.map(r => `Rank ${r.rank}: Team ${String(r.team_key).replace('frc', '')} (W-L-T: ${r.record.wins}-${r.record.losses}-${r.record.ties})`).join('\n')
+        : '';
+
       const res = await fetch('/.netlify/functions/process-ai', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           event: selectedEvent,
-          specs: ourRobotSpecs,
+          info: ourInfo,
           strategy: aiStrategy,
-          payload: payloadData
+          payload: payloadData,
+          rankings: rankingsSummary
         })
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to analyze picklist via serverless function.');
+        throw new Error(errData.error || 'Failed to generate AI picklist.');
       }
 
       const parsed = await res.json();
-      
       if (!parsed.success) {
         throw new Error(parsed.error || 'Server processing error.');
       }
 
       setAiSuggestions(parsed.report || 'No analysis report returned.');
+      
+      const parsedPendingCats = {};
+      (parsed.first_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'first');
+      (parsed.second_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'second');
+      (parsed.do_not_pick || []).forEach(t => parsedPendingCats[String(t).trim()] = 'dnp');
+      
+      setAiRecommendedCategories(parsedPendingCats);
+
       if (Array.isArray(parsed.recommended_order)) {
         const stringifiedOrder = parsed.recommended_order.map(val => String(val).trim());
         setAiRecommendedOrder(stringifiedOrder);
@@ -587,7 +665,7 @@ const HuskyScout = () => {
     e.preventDefault();
     setLoginError('');
     if (!loginName) {
-      setLoginError('No user selected or configured');
+      setLoginError('No user selected');
       return;
     }
 
@@ -600,7 +678,7 @@ const HuskyScout = () => {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
       } else {
-        setLoginError('Incorrect password or no offline credentials cached on this device.');
+        setLoginError('Incorrect password');
       }
       return;
     }
@@ -759,7 +837,7 @@ const HuskyScout = () => {
         {unsyncedCount > 0 && (
           <div style={{ ...styles.card, border: '1px solid #F59E0B', textAlign: 'center', padding: '12px', marginBottom: '16px' }}>
             <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#F59E0B' }}>
-              {unsyncedCount} UNSYNCED RECORDS SAVED LOCALLY
+              {unsyncedCount} DATA SAVED ON DEVICE
             </span>
             {isOnline && db && (
               <button 
@@ -803,7 +881,7 @@ const HuskyScout = () => {
               <div style={{ marginTop: '10px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center' }}>
                 {appMode === 'test' && <span style={{ color: '#F59E0B' }}>TEST MODE (Data deletes daily)</span>}
                 {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>PRE-EVENT MODE (Pit scouting only)</span>}
-                {appMode === 'active' && <span style={{ color: theme.green }}>EVENT ACTIVE (All features unlocked)</span>}
+                {appMode === 'active' && <span style={{ color: theme.green }}>EVENT ACTIVE</span>}
               </div>
             </div>
             
@@ -911,7 +989,7 @@ const HuskyScout = () => {
               </div>
               <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} placeholder="Match notes..." value={matchData.notes} onChange={e => setMatchData({ ...matchData, notes: e.target.value })} />
             </div>
-            <button type="submit" style={styles.btn}>SUBMIT & SAVE MATCH</button>
+            <button type="submit" style={styles.btn}>SUBMIT</button>
           </form>
         )}
 
@@ -943,7 +1021,6 @@ const HuskyScout = () => {
                 </div>
               </div>
 
-              {/* Pit Photos Capture Input */}
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted, display: 'block', marginBottom: '8px' }}>PHOTOS (MAX 3)</label>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -971,7 +1048,7 @@ const HuskyScout = () => {
 
               <textarea style={{ ...styles.input, height: '80px', resize: 'none' }} placeholder="Robot specs, weight, auto capabilities, etc..." value={pitData.notes} onChange={e => setPitData({ ...pitData, notes: e.target.value })} />
             </div>
-            <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>SUBMIT & SAVE PIT</button>
+            <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>SUBMIT</button>
           </form>
         )}
 
@@ -982,20 +1059,24 @@ const HuskyScout = () => {
               <span style={{ fontWeight: 'bold', color: '#8B5CF6' }}>ALLIANCE PICKLIST</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: theme.muted }}>RANKED BY HYBRID SCORE (W = 5)</span>
-              <button onClick={resetPicklist} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>Reset to Stats Default</button>
+              <span style={{ fontSize: '11px', color: theme.muted }}>RANKED BY HYBRID SCORE</span>
+              <button onClick={resetPicklist} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>Reset Format?</button>
             </div>
 
-            {previewAiOrder && aiRecommendedOrder.length > 0 && (
+            {previewAiOrder && (aiRecommendedOrder.length > 0 || Object.keys(aiRecommendedCategories).length > 0) && (
               <div style={{ ...styles.card, border: `1px solid #F59E0B`, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div>
-                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED ORDER</span>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED AI PICKS</span>
                   <span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button 
                     onClick={() => {
                       setCustomOrders(prev => ({ ...prev, [selectedEvent]: aiRecommendedOrder }));
+                      setTeamCategories(prev => ({ 
+                        ...prev, 
+                        [selectedEvent]: { ...(prev[selectedEvent] || {}), ...aiRecommendedCategories } 
+                      }));
                       setPreviewAiOrder(false);
                     }} 
                     style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
@@ -1006,6 +1087,7 @@ const HuskyScout = () => {
                     onClick={() => {
                       setPreviewAiOrder(false);
                       setAiRecommendedOrder([]);
+                      setAiRecommendedCategories({});
                     }} 
                     style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
                   >
@@ -1026,19 +1108,29 @@ const HuskyScout = () => {
                   const pits = teamHistory.filter(h => h.type === 'pit');
                   const matchesFiltered = teamHistory.filter(h => h.type === 'match');
                   const teamOpr = oprs[item.team] !== undefined ? oprs[item.team] : 'N/A';
+                  
+                  const tbaRankData = rankings.find(r => String(r.team_key).replace('frc', '') === String(item.team));
+                  const tbaRank = tbaRankData ? tbaRankData.rank : 'N/A';
+
+                  const eventCats = teamCategories[selectedEvent] || {};
+                  const myCat = previewAiOrder ? (aiRecommendedCategories[item.team] || eventCats[item.team]) : eventCats[item.team];
+
+                  let cardStyle = { ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '4px' };
+                  if (myCat === 'first') cardStyle.borderLeft = `5px solid ${theme.green}`;
+                  else if (myCat === 'second') cardStyle.borderLeft = `5px solid ${theme.yellow}`;
+                  else if (myCat === 'dnp') {
+                    cardStyle.borderLeft = `5px solid ${theme.red}`;
+                    cardStyle.backgroundColor = '#1F1111'; 
+                  }
 
                   return (
-                    <div 
-                      key={item.team} 
-                      style={{ ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '4px' }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        {/* Expandable team info header row */}
+                    <div key={item.team} style={cardStyle}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <div 
                           onClick={() => setExpandedTeam(isExpanded ? null : item.team)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '15px', cursor: 'pointer', flex: 1 }}
+                          style={{ display: 'flex', alignItems: 'flex-start', gap: '15px', cursor: 'pointer', flex: 1 }}
                         >
-                          <span style={{ fontSize: '16px', fontWeight: '900', color: theme.green, minWidth: '24px' }}>#{index + 1}</span>
+                          <span style={{ fontSize: '16px', fontWeight: '900', color: theme.green, minWidth: '24px', marginTop: '2px' }}>#{index + 1}</span>
                           <div>
                             <span style={{ fontSize: '16px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
                               Team {item.team}
@@ -1049,15 +1141,32 @@ const HuskyScout = () => {
                             <div style={{ fontSize: '11px', color: theme.muted, marginTop: '2px' }}>
                               Off Avg: {item.avgOff} | Def Avg: {item.avgDef} | Hybrid: {item.hybrid}
                             </div>
-                            {oprs[item.team] !== undefined && (
-                              <div style={{ fontSize: '11px', color: theme.green, marginTop: '2px', fontWeight: '600' }}>
-                                TBA OPR: {oprs[item.team]}
-                              </div>
-                            )}
+                            <div style={{ fontSize: '11px', color: '#3B82F6', marginTop: '2px', fontWeight: '600' }}>
+                              TBA Rank: {tbaRank} {tbaRankData && `(${tbaRankData.record.wins}-${tbaRankData.record.losses})`} | OPR: {teamOpr}
+                            </div>
+
+                            {/* Category Selector UI */}
+                            <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'first'); }}
+                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'first' ? theme.green : 'transparent', color: myCat === 'first' ? '#000' : theme.green, border: `1px solid ${theme.green}`, cursor: 'pointer' }}>
+                                1st Pick
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'second'); }}
+                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'second' ? theme.yellow : 'transparent', color: myCat === 'second' ? '#000' : theme.yellow, border: `1px solid ${theme.yellow}`, cursor: 'pointer' }}>
+                                2nd Pick
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'dnp'); }}
+                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'dnp' ? theme.red : 'transparent', color: myCat === 'dnp' ? '#fff' : theme.red, border: `1px solid ${theme.red}`, cursor: 'pointer' }}>
+                                DNP
+                              </button>
+                            </div>
+
                           </div>
                         </div>
 
-                        {/* Reordering picklist controls */}
                         <div style={{ display: 'flex', gap: '6px' }}>
                           <button 
                             type="button"
@@ -1078,7 +1187,6 @@ const HuskyScout = () => {
                         </div>
                       </div>
 
-                      {/* Expanding details summary panel */}
                       {isExpanded && (
                         <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '12px', marginTop: '8px' }}>
                           {pits.length > 0 ? (
@@ -1132,24 +1240,24 @@ const HuskyScout = () => {
 
             <div style={{ ...styles.card, marginTop: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <span style={{ fontSize: '14px', fontWeight: '800', color: '#8B5CF6' }}>STRATEGIC SELECTION ADVISOR</span>
+                <span style={{ fontSize: '14px', fontWeight: '800', color: '#8B5CF6' }}>AI Strategy</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '15px' }}>
                 <div>
-                  <label style={{ fontSize: '10px', color: theme.muted }}>ALLIANCE FOCUS STRATEGY</label>
+                  <label style={{ fontSize: '10px', color: theme.muted }}>Strategy</label>
                   <select style={{ ...styles.input, marginTop: '5px' }} value={aiStrategy} onChange={e => setAiStrategy(e.target.value)}>
-                    <option value="balanced">Complementary / Balanced Alliance</option>
-                    <option value="offense">Maximum Offensive Cycling Power</option>
-                    <option value="defense">Defensive Guard & Field Control</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="offense">Offense</option>
+                    <option value="defense">Defense</option>
                   </select>
                 </div>
                 <div>
-                  <label style={{ fontSize: '10px', color: theme.muted }}>OUR ROBOT SPECS (FOR ALIGNMENT MATRIX)</label>
-                  <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourRobotSpecs} onChange={e => setOurRobotSpecs(e.target.value)} />
+                  <label style={{ fontSize: '10px', color: theme.muted }}>Info</label>
+                  <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourInfo} onChange={e => setOurInfo(e.target.value)} />
                 </div>
               </div>
               <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>
-                {loadingAi ? 'ANALYZING MATRIX PROFILES...' : 'GENERATE STRATEGIC SUGGESTIONS'}
+                {loadingAi ? 'Loading' : 'Generate Suggestions/Report'}
               </button>
               {aiError && <div style={{ color: '#EF4444', fontSize: '12px', marginTop: '10px', fontWeight: 'bold' }}>{aiError}</div>}
               {aiSuggestions && (
