@@ -516,7 +516,7 @@ const HuskyScout = () => {
         ? rankings.map(r => `Rank ${r.rank}: Team ${String(r.team_key).replace('frc', '')} (W-L-T: ${r.record.wins}-${r.record.losses}-${r.record.ties})`).join('\n')
         : '';
 
-      const res = await fetch('/.netlify/functions/process-ai', {
+      const res = await fetch('/.netlify/functions/process-ai-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ event: selectedEvent, info: ourInfo, strategy: aiStrategy, payload: payloadData, rankings: rankingsSummary })
