@@ -67,7 +67,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
+        model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 2500, 
         response_format: { type: 'json_object' }
