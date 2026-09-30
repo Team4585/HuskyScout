@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
-import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc } from 'firebase/firestore';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, collection, addDoc, getDocs, doc, setDoc, getDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 const secureHash = async (username, password) => {
   const msgBuffer = new TextEncoder().encode(username.toLowerCase().trim() + password);
@@ -81,6 +81,7 @@ const Counter = ({ label, value, onUpdate }) => (
 
 const HuskyScout = () => {
   const [db, setDb] = useState(null);
+  const [firebaseConfig, setFirebaseConfig] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [view, setView] = useState('menu');
   const [events, setEvents] = useState([]);
@@ -203,7 +204,9 @@ const HuskyScout = () => {
       }
       if (config && config.apiKey) {
         try {
-          const app = initializeApp(config);
+          setFirebaseConfig(config);
+          const existingApps = getApps();
+          const app = existingApps.length === 0 ? initializeApp(config) : existingApps[0];
           setDb(getFirestore(app));
         } catch (e) { console.error(e); }
       }
@@ -497,8 +500,13 @@ const HuskyScout = () => {
     setLoadingAi(true);
     setAiError('');
     setAiSuggestions('');
+
     try {
       if (picklist.length === 0) throw new Error('No teams are in the current event.');
+      if (!db || !firebaseConfig) throw new Error('Firebase configuration missing for background processing job.');
+
+      const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const jobRef = doc(db, 'ai_jobs', jobId);
 
       const payloadData = picklist.map((item, index) => {
         const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team).trim() === String(item.team).trim());
@@ -516,43 +524,70 @@ const HuskyScout = () => {
         ? rankings.map(r => `Rank ${r.rank}: Team ${String(r.team_key).replace('frc', '')} (W-L-T: ${r.record.wins}-${r.record.losses}-${r.record.ties})`).join('\n')
         : '';
 
+      // Trigger the background background function execution
       const res = await fetch('/.netlify/functions/process-ai-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: selectedEvent, info: ourInfo, strategy: aiStrategy, payload: payloadData, rankings: rankingsSummary })
+        body: JSON.stringify({
+          jobId,
+          fbConfig: firebaseConfig,
+          event: selectedEvent,
+          info: ourInfo,
+          strategy: aiStrategy,
+          payload: payloadData,
+          rankings: rankingsSummary
+        })
       });
 
       if (!res.ok) {
-        let errData = {};
-        try {
-            const errText = await res.text();
-            errData = JSON.parse(errText);
-        } catch(e) {
-            throw new Error(`Server Timeout (504): FRC picklist took too long. Try reducing teams or retry.`);
+        const errText = await res.text();
+        throw new Error(`Failed to trigger AI job: ${errText}`);
+      }
+
+      // Listen for updates from Firestore asynchronously written by the background function
+      let timeoutId;
+      const unsubscribe = onSnapshot(jobRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.error) {
+            clearTimeout(timeoutId);
+            unsubscribe();
+            setAiError(data.error);
+            setLoadingAi(false);
+          } else if (data.report || data.recommended_order) {
+            clearTimeout(timeoutId);
+            unsubscribe();
+
+            setAiSuggestions(data.report || 'No analysis report returned.');
+            
+            const parsedPendingCats = {};
+            (data.first_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'first');
+            (data.second_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'second');
+            (data.do_not_pick || []).forEach(t => parsedPendingCats[String(t).trim()] = 'dnp');
+            
+            setAiRecommendedCategories(parsedPendingCats);
+
+            if (Array.isArray(data.recommended_order)) {
+              setAiRecommendedOrder(data.recommended_order.map(val => String(val).trim()));
+              setPreviewAiOrder(true);
+              setShowDefaultStats(false);
+            }
+            setLoadingAi(false);
+          }
         }
-        throw new Error(errData.error || 'Failed to generate AI picklist.');
-      }
+      });
 
-      const parsed = await res.json();
-      if (!parsed.success) throw new Error(parsed.error || 'Server processing error.');
+      // Safeguard timeout (15 minutes max matching background function capacity)
+      timeoutId = setTimeout(() => {
+        unsubscribe();
+        if (loadingAi) {
+          setLoadingAi(false);
+          setAiError('AI request timed out waiting for Firebase response.');
+        }
+      }, 15 * 60 * 1000);
 
-      setAiSuggestions(parsed.report || 'No analysis report returned.');
-      
-      const parsedPendingCats = {};
-      (parsed.first_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'first');
-      (parsed.second_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'second');
-      (parsed.do_not_pick || []).forEach(t => parsedPendingCats[String(t).trim()] = 'dnp');
-      
-      setAiRecommendedCategories(parsedPendingCats);
-
-      if (Array.isArray(parsed.recommended_order)) {
-        setAiRecommendedOrder(parsed.recommended_order.map(val => String(val).trim()));
-        setPreviewAiOrder(true);
-        setShowDefaultStats(false);
-      }
     } catch (err) {
       setAiError(err.message || 'Error generating AI suggestions.');
-    } finally {
       setLoadingAi(false);
     }
   };
@@ -931,7 +966,7 @@ const HuskyScout = () => {
                 </div>
                 <div><label style={{ fontSize: '10px', color: theme.muted }}>Info</label><textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourInfo} onChange={e => setOurInfo(e.target.value)} /></div>
               </div>
-              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>{loadingAi ? 'Loading...' : 'Generate Suggestions'}</button>
+              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>{loadingAi ? 'Analyzing (Background Job)...' : 'Generate Suggestions'}</button>
               {aiError && <div style={{ color: '#EF4444', fontSize: '12px', marginTop: '10px', fontWeight: 'bold' }}>{aiError}</div>}
               {aiSuggestions && (
                 <div style={{ marginTop: '15px', padding: '12px', backgroundColor: '#0F172A', borderRadius: '10px', border: `1px solid ${theme.border}`, maxHeight: '300px', overflowY: 'auto' }}>
