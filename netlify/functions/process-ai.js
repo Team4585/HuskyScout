@@ -69,7 +69,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
       body: JSON.stringify({
         model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 2500, 
+        max_tokens: 10000, 
         response_format: { type: 'json_object' }
       })
     });
