@@ -84,16 +84,20 @@ const HuskyScout = () => {
   const [currentUser, setCurrentUser] = useState(null);
   const [view, setView] = useState('menu');
   const [events, setEvents] = useState([]);
+  
   const [selectedEvent, setSelectedEvent] = useState('');
+  const [debouncedEvent, setDebouncedEvent] = useState(''); 
+
   const [matches, setMatches] = useState([]);
   const [oprs, setOprs] = useState({});
   const [rankings, setRankings] = useState([]);
   const [history, setHistory] = useState([]);
   const [customOrders, setCustomOrders] = useState({});
-  const [teamCategories, setTeamCategories] = useState({}); // 'first', 'second', 'dnp'
+  const [teamCategories, setTeamCategories] = useState({});
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const [manualEventMode, setManualEventMode] = useState(false);
+  const [showDefaultStats, setShowDefaultStats] = useState(false);
 
   const [aiStrategy, setAiStrategy] = useState('balanced');
   const [ourInfo, setOurInfo] = useState('Swerve drive, 20bps drum shooter, slow intake, no climb');
@@ -118,29 +122,29 @@ const HuskyScout = () => {
 
   const todayStr = useMemo(() => getLocalDateString(), []);
 
+  // Debounce logic for the event input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedEvent(selectedEvent);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [selectedEvent]);
+
   const activeEventDetails = useMemo(() => {
     return events.find(e => e.key === selectedEvent);
   }, [events, selectedEvent]);
 
   const appMode = useMemo(() => {
-    if (manualEventMode) {
-      return 'active';
-    }
-    if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) {
-      return 'test';
-    }
+    if (manualEventMode) return 'active';
+    if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) return 'test';
     const getDaysDifference = (dateStr1, dateStr2) => {
       const d1 = new Date(dateStr1 + 'T00:00:00');
       const d2 = new Date(dateStr2 + 'T00:00:00');
-      const diffTime = d1 - d2;
-      return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
     };
     const daysToStart = getDaysDifference(activeEventDetails.start_date, todayStr);
-    if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) {
-      return 'active';
-    } else if (daysToStart > 0 && daysToStart <= 7) {
-      return 'preevent';
-    }
+    if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) return 'active';
+    else if (daysToStart > 0 && daysToStart <= 7) return 'preevent';
     return 'test';
   }, [activeEventDetails, todayStr, manualEventMode]);
 
@@ -161,7 +165,6 @@ const HuskyScout = () => {
   useEffect(() => {
     const savedUser = localStorage.getItem('husky_scout_current_user');
     if (savedUser) setCurrentUser(savedUser);
-
     try {
       const savedCats = localStorage.getItem('husky_scout_categories');
       if (savedCats) setTeamCategories(JSON.parse(savedCats));
@@ -171,37 +174,19 @@ const HuskyScout = () => {
   }, []);
 
   useEffect(() => {
-    if (Object.keys(teamCategories).length > 0) {
-      localStorage.setItem('husky_scout_categories', JSON.stringify(teamCategories));
-    }
+    if (Object.keys(teamCategories).length > 0) localStorage.setItem('husky_scout_categories', JSON.stringify(teamCategories));
   }, [teamCategories]);
 
   useEffect(() => {
-    if (Object.keys(customOrders).length > 0) {
-      localStorage.setItem('husky_scout_orders', JSON.stringify(customOrders));
-    }
+    if (Object.keys(customOrders).length > 0) localStorage.setItem('husky_scout_orders', JSON.stringify(customOrders));
   }, [customOrders]);
-
-  useEffect(() => {
-    const viewTitles = {
-      menu: 'HuskyScout',
-      match: 'Match Scouting - HuskyScout',
-      pit: 'Pit Scouting - HuskyScout',
-      picklist: 'Picklist - HuskyScout',
-      history: 'Archive - HuskyScout',
-      ourMatches: 'Our Matches - HuskyScout',
-    };
-    document.title = viewTitles[view] || 'HuskyScout';
-  }, [view]);
 
   useEffect(() => {
     const initFirebase = async () => {
       let config = null;
       try {
         const cached = localStorage.getItem('husky_scout_firebase_config');
-        if (cached) {
-          config = JSON.parse(cached);
-        }
+        if (cached) config = JSON.parse(cached);
       } catch (e) {}
 
       if (isOnline) {
@@ -214,19 +199,13 @@ const HuskyScout = () => {
               localStorage.setItem('husky_scout_firebase_config', JSON.stringify(remoteConfig));
             }
           }
-        } catch (e) {
-          console.error(e);
-        }
+        } catch (e) {}
       }
-
       if (config && config.apiKey) {
         try {
           const app = initializeApp(config);
-          const firestoreDb = getFirestore(app);
-          setDb(firestoreDb);
-        } catch (e) {
-          console.error(e);
-        }
+          setDb(getFirestore(app));
+        } catch (e) { console.error(e); }
       }
     };
     initFirebase();
@@ -234,14 +213,8 @@ const HuskyScout = () => {
 
   const loadAndSyncHistory = async (firestoreDb) => {
     let localData = [];
-    try {
-      localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]');
-    } catch (e) {}
-
-    localData = localData.filter(item => {
-      const isOldTest = item.isTest && item.dateString && item.dateString !== todayStr;
-      return !isOldTest;
-    });
+    try { localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]'); } catch (e) {}
+    localData = localData.filter(item => !(item.isTest && item.dateString && item.dateString !== todayStr));
 
     let remoteData = [];
     if (firestoreDb && isOnline) {
@@ -250,27 +223,19 @@ const HuskyScout = () => {
         for (const docSnap of querySnapshot.docs) {
           const docData = docSnap.data();
           if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
-            try {
-              await deleteDoc(doc(firestoreDb, 'scouting_data', docSnap.id));
-            } catch (err) {
-              console.error(err);
-            }
+            try { await deleteDoc(doc(firestoreDb, 'scouting_data', docSnap.id)); } catch (err) {}
           } else {
             remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
         }
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
 
     const mergedMap = new Map();
     localData.forEach(item => mergedMap.set(String(item.id), item));
     remoteData.forEach(item => mergedMap.set(String(item.id), { ...item, synced: true }));
 
-    const mergedList = Array.from(mergedMap.values());
-    mergedList.sort((a, b) => (a.id || 0) - (b.id || 0));
-
+    const mergedList = Array.from(mergedMap.values()).sort((a, b) => (a.id || 0) - (b.id || 0));
     setHistory(mergedList);
     localStorage.setItem('husky_scout_history', JSON.stringify(mergedList));
 
@@ -283,10 +248,7 @@ const HuskyScout = () => {
           await addDoc(collection(firestoreDb, 'scouting_data'), toUpload);
           item.synced = true;
           listUpdated = true;
-        } catch (e) {
-          console.error(e);
-          break;
-        }
+        } catch (e) { break; }
       }
       if (listUpdated) {
         const updatedList = mergedList.map(item => ({ ...item }));
@@ -324,31 +286,25 @@ const HuskyScout = () => {
         if (res.ok) {
           const data = await res.json();
           const todayStrLocal = getLocalDateString();
-          const filtered = data.filter(ev => {
-            const isCurrentOrFutureYear = ev.year >= CONFIG.YEAR;
-            const isNotPast = !ev.end_date || ev.end_date >= todayStrLocal;
-            return isCurrentOrFutureYear && isNotPast;
-          });
+          const filtered = data.filter(ev => ev.year >= CONFIG.YEAR && (!ev.end_date || ev.end_date >= todayStrLocal));
           setEvents(filtered);
           localStorage.setItem('husky_scout_events', JSON.stringify(filtered));
-          if (filtered.length > 0) {
+          if (filtered.length > 0 && !selectedEvent) {
             const activeOrFuture = filtered.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
             setSelectedEvent(activeOrFuture ? activeOrFuture.key : filtered[0].key);
           }
         }
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     };
     fetchTBA();
   }, [currentUser, isOnline]);
 
   useEffect(() => {
-    if (!selectedEvent) return;
+    if (!debouncedEvent) return;
     const fetchMatches = async () => {
       let cachedMatches = [];
       try {
-        const cached = localStorage.getItem(`husky_scout_matches_${selectedEvent}`);
+        const cached = localStorage.getItem(`husky_scout_matches_${debouncedEvent}`);
         if (cached) {
           cachedMatches = JSON.parse(cached);
           setMatches(cachedMatches);
@@ -358,33 +314,33 @@ const HuskyScout = () => {
       if (!isOnline) return;
 
       try {
-        const res = await fetch(`/.netlify/functions/get-matches?event=${selectedEvent}`);
+        const res = await fetch(`/.netlify/functions/get-matches?event=${debouncedEvent}`);
         if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data)) {
-            const qmMatches = data
-              .filter(m => m.comp_level === 'qm')
-              .sort((a, b) => a.match_number - b.match_number);
-            setMatches(qmMatches);
-            localStorage.setItem(`husky_scout_matches_${selectedEvent}`, JSON.stringify(qmMatches));
-          }
+          const text = await res.text();
+          try {
+            const data = JSON.parse(text);
+            if (Array.isArray(data)) {
+              const qmMatches = data.filter(m => m.comp_level === 'qm').sort((a, b) => a.match_number - b.match_number);
+              setMatches(qmMatches);
+              localStorage.setItem(`husky_scout_matches_${debouncedEvent}`, JSON.stringify(qmMatches));
+            }
+          } catch(e) { console.error("Invalid Match JSON"); }
         } else {
           if (cachedMatches.length === 0) setMatches([]);
         }
       } catch (e) {
-        console.error(e);
         if (cachedMatches.length === 0) setMatches([]);
       }
     };
     fetchMatches();
-  }, [selectedEvent, isOnline]);
+  }, [debouncedEvent, isOnline]);
 
   useEffect(() => {
-    if (!selectedEvent) return;
+    if (!debouncedEvent) return;
     const fetchOprs = async () => {
       let cachedOprs = {};
       try {
-        const cached = localStorage.getItem(`husky_scout_oprs_${selectedEvent}`);
+        const cached = localStorage.getItem(`husky_scout_oprs_${debouncedEvent}`);
         if (cached) {
           cachedOprs = JSON.parse(cached);
           setOprs(cachedOprs);
@@ -394,32 +350,30 @@ const HuskyScout = () => {
       if (!isOnline) return;
 
       try {
-        const res = await fetch(`/.netlify/functions/get-oprs?event=${selectedEvent}`);
+        const res = await fetch(`/.netlify/functions/get-oprs?event=${debouncedEvent}`);
         if (res.ok) {
-          const data = await res.json();
-          if (data && data.oprs) {
-            const normalized = {};
-            Object.keys(data.oprs).forEach(k => {
-              const teamNum = String(k.replace(/^frc/, '')).trim();
-              normalized[teamNum] = parseFloat(data.oprs[k].toFixed(1));
-            });
-            setOprs(normalized);
-            localStorage.setItem(`husky_scout_oprs_${selectedEvent}`, JSON.stringify(normalized));
-          }
+          const text = await res.text();
+          try {
+            const data = JSON.parse(text);
+            if (data && data.oprs) {
+              const normalized = {};
+              Object.keys(data.oprs).forEach(k => normalized[String(k.replace(/^frc/, '')).trim()] = parseFloat(data.oprs[k].toFixed(1)));
+              setOprs(normalized);
+              localStorage.setItem(`husky_scout_oprs_${debouncedEvent}`, JSON.stringify(normalized));
+            }
+          } catch(e) { console.error("Invalid OPR JSON"); }
         }
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) {}
     };
     fetchOprs();
-  }, [selectedEvent, isOnline]);
+  }, [debouncedEvent, isOnline]);
 
   useEffect(() => {
-    if (!selectedEvent) return;
+    if (!debouncedEvent) return;
     const fetchRankings = async () => {
       let cachedRankings = [];
       try {
-        const cached = localStorage.getItem(`husky_scout_rankings_${selectedEvent}`);
+        const cached = localStorage.getItem(`husky_scout_rankings_${debouncedEvent}`);
         if (cached) {
           cachedRankings = JSON.parse(cached);
           setRankings(cachedRankings);
@@ -429,20 +383,21 @@ const HuskyScout = () => {
       if (!isOnline) return;
 
       try {
-        const res = await fetch(`/.netlify/functions/get-rankings?event=${selectedEvent}`);
+        const res = await fetch(`/.netlify/functions/get-rankings?event=${debouncedEvent}`);
         if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data)) {
-            setRankings(data);
-            localStorage.setItem(`husky_scout_rankings_${selectedEvent}`, JSON.stringify(data));
-          }
+          const text = await res.text();
+          try {
+             const data = JSON.parse(text);
+             if (Array.isArray(data)) {
+               setRankings(data);
+               localStorage.setItem(`husky_scout_rankings_${debouncedEvent}`, JSON.stringify(data));
+             }
+          } catch(e) { console.error("Invalid Rankings JSON"); }
         }
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) {}
     };
     fetchRankings();
-  }, [selectedEvent, isOnline]);
+  }, [debouncedEvent, isOnline]);
 
   const teamsInMatch = useMemo(() => {
     const foundMatch = matches.find(m => String(m.match_number) === String(matchData.match));
@@ -458,9 +413,7 @@ const HuskyScout = () => {
     if (teamsInMatch.length > 0) {
       const matchTeams = teamsInMatch.map(t => t.team);
       setMatchData(prev => {
-        if (!matchTeams.includes(prev.team)) {
-          return { ...prev, team: matchTeams[0] };
-        }
+        if (!matchTeams.includes(prev.team)) return { ...prev, team: matchTeams[0] };
         return prev;
       });
     }
@@ -477,9 +430,7 @@ const HuskyScout = () => {
 
   const scoutedEventsInHistory = useMemo(() => {
     const set = new Set();
-    history.forEach(h => {
-      if (h.event) set.add(h.event);
-    });
+    history.forEach(h => { if (h.event) set.add(h.event); });
     return Array.from(set);
   }, [history]);
 
@@ -488,58 +439,38 @@ const HuskyScout = () => {
 
     const uniqueTeams = new Set();
     matches.forEach(m => {
-      if (m.alliances?.red?.teams) {
-        m.alliances.red.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
-      }
-      if (m.alliances?.blue?.teams) {
-        m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
-      }
+      if (m.alliances?.red?.teams) m.alliances.red.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
+      if (m.alliances?.blue?.teams) m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
     });
     history.forEach(h => {
-      if (h.event === selectedEvent && h.data?.team) {
-        uniqueTeams.add(String(h.data.team).trim());
-      }
+      if (h.event === selectedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
     });
     const allTeams = Array.from(uniqueTeams);
 
     const teamsWithStats = allTeams.map(t => {
       const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team).trim() === String(t).trim());
-      
-      const avgOff = teamMatches.length > 0 
-        ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1))
-        : 0;
-
+      const avgOff = teamMatches.length > 0 ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1)) : 0;
       const playedDefMatches = teamMatches.filter(h => Number(h.data.defenseQuality || 0) > 0);
-      const avgDef = playedDefMatches.length > 0
-        ? parseFloat((playedDefMatches.reduce((sum, h) => {
+      const avgDef = playedDefMatches.length > 0 ? parseFloat((playedDefMatches.reduce((sum, h) => {
             const dq = Number(h.data.defenseQuality || 0);
             const df = Number(h.data.defenseFouls || 0);
             return sum + Math.max(0, dq - (df * 0.5));
-          }, 0) / playedDefMatches.length).toFixed(1))
-        : 0;
-
+          }, 0) / playedDefMatches.length).toFixed(1)) : 0;
       const hybrid = parseFloat((avgOff + (avgDef * 5)).toFixed(1));
-
       return { team: t, avgOff, avgDef, hybrid };
     });
 
-    const activeOrder = (previewAiOrder && aiRecommendedOrder.length > 0) 
-      ? aiRecommendedOrder 
-      : customOrders[selectedEvent];
+    const activeOrder = showDefaultStats ? null : ((previewAiOrder && aiRecommendedOrder.length > 0) ? aiRecommendedOrder : customOrders[selectedEvent]);
 
     if (activeOrder) {
       const savedSet = new Set(activeOrder.map(val => String(val).trim()));
-      const inSaved = activeOrder
-        .map(tNum => teamsWithStats.find(t => String(t.team).trim() === String(tNum).trim()))
-        .filter(Boolean);
-      const notInSaved = teamsWithStats
-        .filter(t => !savedSet.has(String(t.team).trim()))
-        .sort((a, b) => b.hybrid - a.hybrid);
+      const inSaved = activeOrder.map(tNum => teamsWithStats.find(t => String(t.team).trim() === String(tNum).trim())).filter(Boolean);
+      const notInSaved = teamsWithStats.filter(t => !savedSet.has(String(t.team).trim())).sort((a, b) => b.hybrid - a.hybrid);
       return [...inSaved, ...notInSaved];
     } else {
       return teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
     }
-  }, [selectedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder]);
+  }, [selectedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
 
   const moveTeam = (index, direction) => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
@@ -547,40 +478,15 @@ const HuskyScout = () => {
     const updated = [...picklist];
     const [movedItem] = updated.splice(index, 1);
     updated.splice(newIndex, 0, movedItem);
-    
-    setCustomOrders(prev => ({
-      ...prev,
-      [selectedEvent]: updated.map(t => String(t.team).trim())
-    }));
+    setCustomOrders(prev => ({ ...prev, [selectedEvent]: updated.map(t => String(t.team).trim()) }));
   };
 
   const toggleCategory = (team, cat) => {
     setTeamCategories(prev => {
       const eventCats = prev[selectedEvent] || {};
       const newCat = eventCats[team] === cat ? null : cat;
-      return {
-        ...prev,
-        [selectedEvent]: {
-          ...eventCats,
-          [team]: newCat
-        }
-      };
+      return { ...prev, [selectedEvent]: { ...eventCats, [team]: newCat } };
     });
-  };
-
-  const resetPicklist = () => {
-    if (window.confirm("Reset picklist order and categories?")) {
-      setCustomOrders(prev => {
-        const next = { ...prev };
-        delete next[selectedEvent];
-        return next;
-      });
-      setTeamCategories(prev => {
-        const next = { ...prev };
-        delete next[selectedEvent];
-        return next;
-      });
-    }
   };
 
   const runRemoteAiAnalysis = async () => {
@@ -592,27 +498,19 @@ const HuskyScout = () => {
     setAiError('');
     setAiSuggestions('');
     try {
-      if (picklist.length === 0) {
-        throw new Error('No teams are in the current event.');
-      }
+      if (picklist.length === 0) throw new Error('No teams are in the current event.');
 
       const payloadData = picklist.map((item, index) => {
         const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team).trim() === String(item.team).trim());
         const pitRecords = teamHistory.filter(h => h.type === 'pit');
         const matchRecords = teamHistory.filter(h => h.type === 'match');
-        
         const pitNotes = pitRecords.map(h => h.data.notes).filter(Boolean).join(' | ');
         const matchNotes = matchRecords.map(h => h.data.notes).filter(Boolean).join(' | ');
-        
         const drivetrains = Array.from(new Set(pitRecords.map(h => h.data.drivetrain).filter(Boolean))).join(', ') || 'Unknown';
         const mechanisms = Array.from(new Set(pitRecords.map(h => h.data.mechanism).filter(Boolean))).join(', ') || 'Unknown';
         
-        return `Rank #${index + 1} - Team ${item.team}:
-  - Metrics: Avg Offense: ${item.avgOff}, Avg Defense: ${item.avgDef}, Hybrid: ${item.hybrid}
-  - Pit Specs: Drivetrain [${drivetrains}], Primary Mechanism [${mechanisms}]
-  - Pit Notes: ${pitNotes || 'None'}
-  - Match Notes: ${matchNotes || 'None'}`;
-      }).join('\n\n');
+        return `Rank #${index + 1} - Team ${item.team}: Offense: ${item.avgOff}, Defense: ${item.avgDef}, Hybrid: ${item.hybrid} | Pits: [${drivetrains}, ${mechanisms}] | Notes: ${pitNotes} | ${matchNotes}`;
+      }).join('\n');
 
       const rankingsSummary = rankings && rankings.length > 0 
         ? rankings.map(r => `Rank ${r.rank}: Team ${String(r.team_key).replace('frc', '')} (W-L-T: ${r.record.wins}-${r.record.losses}-${r.record.ties})`).join('\n')
@@ -621,24 +519,22 @@ const HuskyScout = () => {
       const res = await fetch('/.netlify/functions/process-ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: selectedEvent,
-          info: ourInfo,
-          strategy: aiStrategy,
-          payload: payloadData,
-          rankings: rankingsSummary
-        })
+        body: JSON.stringify({ event: selectedEvent, info: ourInfo, strategy: aiStrategy, payload: payloadData, rankings: rankingsSummary })
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
+        let errData = {};
+        try {
+            const errText = await res.text();
+            errData = JSON.parse(errText);
+        } catch(e) {
+            throw new Error(`Server Timeout (504): FRC picklist took too long. Try reducing teams or retry.`);
+        }
         throw new Error(errData.error || 'Failed to generate AI picklist.');
       }
 
       const parsed = await res.json();
-      if (!parsed.success) {
-        throw new Error(parsed.error || 'Server processing error.');
-      }
+      if (!parsed.success) throw new Error(parsed.error || 'Server processing error.');
 
       setAiSuggestions(parsed.report || 'No analysis report returned.');
       
@@ -650,9 +546,9 @@ const HuskyScout = () => {
       setAiRecommendedCategories(parsedPendingCats);
 
       if (Array.isArray(parsed.recommended_order)) {
-        const stringifiedOrder = parsed.recommended_order.map(val => String(val).trim());
-        setAiRecommendedOrder(stringifiedOrder);
+        setAiRecommendedOrder(parsed.recommended_order.map(val => String(val).trim()));
         setPreviewAiOrder(true);
+        setShowDefaultStats(false);
       }
     } catch (err) {
       setAiError(err.message || 'Error generating AI suggestions.');
@@ -664,22 +560,16 @@ const HuskyScout = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
-    if (!loginName) {
-      setLoginError('No user selected');
-      return;
-    }
+    if (!loginName) return setLoginError('No user selected');
 
     const localKey = 'husky_scout_offline_' + loginName.toLowerCase().trim();
     const localHash = await secureHash(loginName, loginPass);
 
     if (!isOnline) {
-      const cachedHash = localStorage.getItem(localKey);
-      if (cachedHash && cachedHash === localHash) {
+      if (localStorage.getItem(localKey) === localHash) {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
-      } else {
-        setLoginError('Incorrect password');
-      }
+      } else setLoginError('Incorrect password');
       return;
     }
     
@@ -694,12 +584,8 @@ const HuskyScout = () => {
         setCurrentUser(loginName);
         localStorage.setItem('husky_scout_current_user', loginName);
         localStorage.setItem(localKey, localHash);
-      } else {
-        setLoginError(result.error || 'Incorrect password');
-      }
-    } catch (err) {
-      setLoginError('Error verifying password');
-    }
+      } else setLoginError(result.error || 'Incorrect password');
+    } catch (err) { setLoginError('Error verifying password'); }
   };
 
   const handleLogout = () => {
@@ -709,44 +595,25 @@ const HuskyScout = () => {
   };
 
   const handlePhotoUpload = (e) => {
-    const files = Array.from(e.target.files);
-    const currentPhotos = pitData.photos || [];
-    const remainingSlots = 3 - currentPhotos.length;
-    const filesToProcess = files.slice(0, remainingSlots);
-
-    filesToProcess.forEach(file => {
+    Array.from(e.target.files).slice(0, 3 - (pitData.photos || []).length).forEach(file => {
       if (!file.type.startsWith('image/')) return;
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setPitData(prev => ({
-          ...prev,
-          photos: [...(prev.photos || []), reader.result].slice(0, 3)
-        }));
-      };
+      reader.onloadend = () => setPitData(prev => ({ ...prev, photos: [...(prev.photos || []), reader.result].slice(0, 3) }));
       reader.readAsDataURL(file);
     });
   };
 
   const removePhoto = (index) => {
-    setPitData(prev => ({
-      ...prev,
-      photos: (prev.photos || []).filter((_, i) => i !== index)
-    }));
+    setPitData(prev => ({ ...prev, photos: (prev.photos || []).filter((_, i) => i !== index) }));
   };
 
   const saveToHistory = async (type, data) => {
-    const standardizedData = { ...data, team: String(data.team).trim() };
-    const recordEvent = appMode === 'test' ? 'test_event' : selectedEvent;
     const record = { 
-      id: Date.now(), 
-      type, 
-      scouter: currentUser, 
-      event: recordEvent, 
-      data: standardizedData, 
+      id: Date.now(), type, scouter: currentUser, 
+      event: appMode === 'test' ? 'test_event' : selectedEvent, 
+      data: { ...data, team: String(data.team).trim() }, 
       timestamp: new Date().toLocaleTimeString(),
-      isTest: appMode === 'test',
-      dateString: todayStr,
-      synced: false
+      isTest: appMode === 'test', dateString: todayStr, synced: false
     };
 
     const updated = [...history, record];
@@ -760,32 +627,17 @@ const HuskyScout = () => {
         const syncedList = updated.map(item => item.id === record.id ? { ...item, synced: true } : item);
         setHistory(syncedList);
         localStorage.setItem('husky_scout_history', JSON.stringify(syncedList));
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
-    if (type === 'match') {
-      const nextMatch = (parseInt(data.match, 10) || 0) + 1;
-      setMatchData({ ...emptyMatch, match: String(nextMatch) });
-    }
+    if (type === 'match') setMatchData({ ...emptyMatch, match: String((parseInt(data.match, 10) || 0) + 1) });
     if (type === 'pit') setPitData({ ...emptyPit });
     setView('menu');
-  };
-
-  const handleMatchSubmit = (e) => {
-    e.preventDefault();
-    saveToHistory('match', matchData);
-  };
-
-  const handlePitSubmit = (e) => {
-    e.preventDefault();
-    saveToHistory('pit', pitData);
   };
 
   if (!currentUser) {
     return (
       <div style={styles.container}>
-        <div style={{ maxWidth: '400px', margin: '40px auto', ...styles.card, textStyle: 'center', textAlign: 'center' }}>
+        <div style={{ maxWidth: '400px', margin: '40px auto', ...styles.card, textAlign: 'center' }}>
           <h1 style={{ fontSize: '24px', fontWeight: '900', margin: '0 0 20px 0' }}>HUSKY<span style={{ color: theme.green }}>SCOUT</span></h1>
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
             <div>
@@ -805,12 +657,8 @@ const HuskyScout = () => {
             {loginError && <span style={{ color: '#ef4444', fontSize: '12px', fontWeight: 'bold' }}>{loginError}</span>}
             <button type="submit" style={styles.btn}>Log In</button>
           </form>
-          <div style={{ marginTop: '15px', fontSize: '12px', fontWeight: 'bold' }}>
-            {isOnline ? (
-              <span style={{ color: theme.green }}>Online Mode</span>
-            ) : (
-              <span style={{ color: '#F59E0B' }}>Offline Mode</span>
-            )}
+          <div style={{ marginTop: '15px', fontSize: '12px', fontWeight: 'bold', color: isOnline ? theme.green : '#F59E0B' }}>
+            {isOnline ? 'Online Mode' : 'Offline Mode'}
           </div>
         </div>
       </div>
@@ -824,26 +672,17 @@ const HuskyScout = () => {
         <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: theme.muted }}>
           Active: {currentUser} | <span onClick={handleLogout} style={{ color: '#EF4444', cursor: 'pointer', textDecoration: 'underline' }}>Logout</span>
         </p>
-        <div style={{ marginTop: '8px', fontSize: '12px', fontWeight: 'bold' }}>
-          {isOnline ? (
-            <span style={{ color: theme.green }}>ONLINE MODE</span>
-          ) : (
-            <span style={{ color: '#F59E0B' }}>OFFLINE MODE</span>
-          )}
+        <div style={{ marginTop: '8px', fontSize: '12px', fontWeight: 'bold', color: isOnline ? theme.green : '#F59E0B' }}>
+          {isOnline ? 'ONLINE MODE' : 'OFFLINE MODE'}
         </div>
       </header>
 
       <main style={{ maxWidth: '500px', margin: '0 auto' }}>
         {unsyncedCount > 0 && (
           <div style={{ ...styles.card, border: '1px solid #F59E0B', textAlign: 'center', padding: '12px', marginBottom: '16px' }}>
-            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#F59E0B' }}>
-              {unsyncedCount} DATA SAVED ON DEVICE
-            </span>
+            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#F59E0B' }}>{unsyncedCount} DATA SAVED ON DEVICE</span>
             {isOnline && db && (
-              <button 
-                onClick={() => loadAndSyncHistory(db)} 
-                style={{ ...styles.btn, marginTop: '8px', padding: '10px', fontSize: '12px', backgroundColor: '#F59E0B', color: 'black' }}
-              >
+              <button onClick={() => loadAndSyncHistory(db)} style={{ ...styles.btn, marginTop: '8px', padding: '10px', fontSize: '12px', backgroundColor: '#F59E0B', color: 'black' }}>
                 SYNC DATA NOW
               </button>
             )}
@@ -856,71 +695,37 @@ const HuskyScout = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                 <label style={{ fontSize: '10px', color: theme.green, fontWeight: '800' }}>ACTIVE EVENT</label>
                 <label style={{ fontSize: '10px', color: theme.muted, display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={manualEventMode} onChange={e => { setManualEventMode(e.target.checked); setSelectedEvent(''); }} style={{ accentColor: theme.green }} />
-                  Manual Event Entry
+                  <input type="checkbox" checked={manualEventMode} onChange={e => { setManualEventMode(e.target.checked); setSelectedEvent(''); setDebouncedEvent(''); }} style={{ accentColor: theme.green }} />
+                  Manual
                 </label>
               </div>
               
               {manualEventMode ? (
-                <input 
-                  style={styles.input} 
-                  placeholder="Type Event Code (e.g. 2026utwv or custom_offseason)" 
-                  value={selectedEvent} 
-                  onChange={e => setSelectedEvent(e.target.value)} 
-                />
+                <input style={styles.input} placeholder="Event Code (e.g. 2026utwv)" value={selectedEvent} onChange={e => setSelectedEvent(e.target.value)} />
               ) : (
-                <div>
-                  <input 
-                    style={{ ...styles.input, marginTop: '5px', backgroundColor: '#0F172A', color: theme.muted, cursor: 'not-allowed', border: `1px solid ${theme.border}` }} 
-                    value={activeEventDetails ? activeEventDetails.name : (selectedEvent || 'No active event detected')} 
-                    readOnly 
-                  />
-                </div>
+                <input style={{ ...styles.input, backgroundColor: '#0F172A', color: theme.muted, cursor: 'not-allowed', border: `1px solid ${theme.border}` }} value={activeEventDetails ? activeEventDetails.name : (selectedEvent || 'No active event detected')} readOnly />
               )}
-
               <div style={{ marginTop: '10px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center' }}>
                 {appMode === 'test' && <span style={{ color: '#F59E0B' }}>TEST MODE (Data deletes daily)</span>}
-                {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>PRE-EVENT MODE (Pit scouting only)</span>}
+                {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>PRE-EVENT MODE (Pit scout only)</span>}
                 {appMode === 'active' && <span style={{ color: theme.green }}>EVENT ACTIVE</span>}
               </div>
             </div>
             
-            <button 
-              onClick={() => { if (appMode !== 'preevent') setView('match'); }} 
-              disabled={appMode === 'preevent'}
-              style={{ 
-                ...styles.btn, 
-                backgroundColor: appMode === 'preevent' ? '#334155' : theme.green, 
-                color: appMode === 'preevent' ? theme.muted : '#052e16',
-                cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer'
-              }}
-            >
+            <button onClick={() => { if (appMode !== 'preevent') setView('match'); }} disabled={appMode === 'preevent'} style={{ ...styles.btn, backgroundColor: appMode === 'preevent' ? '#334155' : theme.green, color: appMode === 'preevent' ? theme.muted : '#052e16', cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer' }}>
               {appMode === 'preevent' ? 'MATCH SCOUTING (LOCKED)' : 'MATCH SCOUTING'}
             </button>
-
             <button onClick={() => setView('pit')} style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>PIT SCOUTING</button>
-
-            <button 
-              onClick={() => { if (appMode !== 'preevent') setView('picklist'); }} 
-              disabled={appMode === 'preevent'}
-              style={{ 
-                ...styles.btn, 
-                backgroundColor: appMode === 'preevent' ? '#334155' : '#8B5CF6', 
-                color: appMode === 'preevent' ? theme.muted : 'white',
-                cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer'
-              }}
-            >
+            <button onClick={() => { if (appMode !== 'preevent') setView('picklist'); }} disabled={appMode === 'preevent'} style={{ ...styles.btn, backgroundColor: appMode === 'preevent' ? '#334155' : '#8B5CF6', color: appMode === 'preevent' ? theme.muted : 'white', cursor: appMode === 'preevent' ? 'not-allowed' : 'pointer' }}>
               {appMode === 'preevent' ? 'ALLIANCE PICKLIST (LOCKED)' : 'ALLIANCE PICKLIST'}
             </button>
-
             <button onClick={() => setView('ourMatches')} style={{ ...styles.btn, backgroundColor: '#EC4899', color: 'white' }}>OUR MATCHES (4585)</button>
-
             <button onClick={() => setView('history')} style={styles.btnOutline}>VIEW ARCHIVE ({scoutedEventsInHistory.length} Events)</button>
           </div>
         )}
 
         {view === 'match' && (
-          <form onSubmit={handleMatchSubmit}>
+          <form onSubmit={e => { e.preventDefault(); saveToHistory('match', matchData); }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
               <button type="button" onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
               <span style={{ fontWeight: 'bold', color: theme.green }}>MATCH SCOUTING</span>
@@ -934,33 +739,13 @@ const HuskyScout = () => {
                 <div>
                   <label style={{ fontSize: '10px', color: theme.muted }}>TEAM #</label>
                   {teamsInMatch.length > 0 ? (
-                    <select
-                      style={styles.input}
-                      value={matchData.team}
-                      onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })}
-                      required
-                    >
+                    <select style={styles.input} value={matchData.team} onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })} required>
                       <option value="" disabled>Select Team...</option>
-                      <optgroup label="Red Alliance" style={{ color: '#EF4444' }}>
-                        {teamsInMatch.filter(t => t.alliance === 'red').map(t => (
-                          <option key={t.team} value={t.team} style={{ color: 'white' }}>{t.team}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Blue Alliance" style={{ color: '#3B82F6' }}>
-                        {teamsInMatch.filter(t => t.alliance === 'blue').map(t => (
-                          <option key={t.team} value={t.team} style={{ color: 'white' }}>{t.team}</option>
-                        ))}
-                      </optgroup>
+                      <optgroup label="Red Alliance" style={{ color: '#EF4444' }}>{teamsInMatch.filter(t => t.alliance === 'red').map(t => <option key={t.team} value={t.team} style={{ color: 'white' }}>{t.team}</option>)}</optgroup>
+                      <optgroup label="Blue Alliance" style={{ color: '#3B82F6' }}>{teamsInMatch.filter(t => t.alliance === 'blue').map(t => <option key={t.team} value={t.team} style={{ color: 'white' }}>{t.team}</option>)}</optgroup>
                     </select>
                   ) : (
-                    <input
-                      type="number"
-                      style={styles.input}
-                      placeholder="Type team #"
-                      value={matchData.team}
-                      onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })}
-                      required
-                    />
+                    <input type="number" style={styles.input} placeholder="Type team #" value={matchData.team} onChange={e => setMatchData({ ...matchData, team: String(e.target.value).trim() })} required />
                   )}
                 </div>
               </div>
@@ -973,19 +758,13 @@ const HuskyScout = () => {
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted }}>DEFENSE QUALITY</label>
                 <div style={{ display: 'flex', gap: '4px', marginTop: '5px' }}>
-                  {[0, 1, 2, 3, 4, 5].map(q => (
-                    <button key={q} type="button" onClick={() => setMatchData({ ...matchData, defenseQuality: q })} style={styles.pickerBtn(matchData.defenseQuality === q)}>
-                      {q === 0 ? 'None' : q}
-                    </button>
-                  ))}
+                  {[0, 1, 2, 3, 4, 5].map(q => <button key={q} type="button" onClick={() => setMatchData({ ...matchData, defenseQuality: q })} style={styles.pickerBtn(matchData.defenseQuality === q)}>{q === 0 ? 'None' : q}</button>)}
                 </div>
               </div>
               <Counter label="Defense Fouls" value={matchData.defenseFouls} onUpdate={v => setMatchData({ ...matchData, defenseFouls: v })} />
               <div style={{ margin: '15px 0', padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: `1px solid ${theme.border}` }}>
                 <span style={{ fontSize: '14px', fontWeight: '700', color: theme.muted }}>Est. Match Points</span>
-                <span style={{ fontSize: '18px', fontWeight: '900', color: theme.green }}>
-                  {calculateScore(matchData.autoPieces, matchData.teleopPieces, matchData.climb)}
-                </span>
+                <span style={{ fontSize: '18px', fontWeight: '900', color: theme.green }}>{calculateScore(matchData.autoPieces, matchData.teleopPieces, matchData.climb)}</span>
               </div>
               <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} placeholder="Match notes..." value={matchData.notes} onChange={e => setMatchData({ ...matchData, notes: e.target.value })} />
             </div>
@@ -994,7 +773,7 @@ const HuskyScout = () => {
         )}
 
         {view === 'pit' && (
-          <form onSubmit={handlePitSubmit}>
+          <form onSubmit={e => { e.preventDefault(); saveToHistory('pit', pitData); }}>
              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
               <button type="button" onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
               <span style={{ fontWeight: 'bold', color: '#3B82F6' }}>PIT SCOUTING</span>
@@ -1007,46 +786,33 @@ const HuskyScout = () => {
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted }}>DRIVETRAIN</label>
                 <div style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
-                  {['Swerve', 'Tank', 'Mecanum'].map(opt => (
-                    <button key={opt} type="button" onClick={() => setPitData({ ...pitData, drivetrain: opt })} style={styles.pickerBtn(pitData.drivetrain === opt)}>{opt}</button>
-                  ))}
+                  {['Swerve', 'Tank', 'Mecanum'].map(opt => <button key={opt} type="button" onClick={() => setPitData({ ...pitData, drivetrain: opt })} style={styles.pickerBtn(pitData.drivetrain === opt)}>{opt}</button>)}
                 </div>
               </div>
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted }}>PRIMARY MECHANISM</label>
                 <div style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
-                  {['Elevator', 'Arm', 'Shooter', 'None'].map(opt => (
-                    <button key={opt} type="button" onClick={() => setPitData({ ...pitData, mechanism: opt })} style={styles.pickerBtn(pitData.mechanism === opt)}>{opt}</button>
-                  ))}
+                  {['Elevator', 'Arm', 'Shooter', 'None'].map(opt => <button key={opt} type="button" onClick={() => setPitData({ ...pitData, mechanism: opt })} style={styles.pickerBtn(pitData.mechanism === opt)}>{opt}</button>)}
                 </div>
               </div>
-
               <div style={{ marginBottom: '15px' }}>
                 <label style={{ fontSize: '10px', color: theme.muted, display: 'block', marginBottom: '8px' }}>PHOTOS (MAX 3)</label>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   {(pitData.photos || []).map((photo, index) => (
                     <div key={index} style={{ position: 'relative', width: '80px', height: '80px', borderRadius: '8px', border: `1px solid ${theme.border}`, overflow: 'hidden' }}>
                       <img src={photo} alt={`pit-${index}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      <button 
-                        type="button" 
-                        onClick={() => removePhoto(index)} 
-                        style={{ position: 'absolute', top: '2px', right: '2px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '50%', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
-                      >
-                        ×
-                      </button>
+                      <button type="button" onClick={() => removePhoto(index)} style={{ position: 'absolute', top: '2px', right: '2px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '50%', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}>×</button>
                     </div>
                   ))}
                   {(pitData.photos || []).length < 3 && (
                     <label style={{ width: '80px', height: '80px', borderRadius: '8px', border: `2px dashed ${theme.border}`, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backgroundColor: '#0F172A' }}>
-                      <span style={{ fontSize: '18px', color: theme.muted }}>+</span>
-                      <span style={{ fontSize: '9px', color: theme.muted }}>Add Image</span>
+                      <span style={{ fontSize: '18px', color: theme.muted }}>+</span><span style={{ fontSize: '9px', color: theme.muted }}>Add Image</span>
                       <input type="file" accept="image/*" capture="environment" onChange={handlePhotoUpload} style={{ display: 'none' }} multiple />
                     </label>
                   )}
                 </div>
               </div>
-
-              <textarea style={{ ...styles.input, height: '80px', resize: 'none' }} placeholder="Robot specs, weight, auto capabilities, etc..." value={pitData.notes} onChange={e => setPitData({ ...pitData, notes: e.target.value })} />
+              <textarea style={{ ...styles.input, height: '80px', resize: 'none' }} placeholder="Specs, weight, auto capabilities..." value={pitData.notes} onChange={e => setPitData({ ...pitData, notes: e.target.value })} />
             </div>
             <button type="submit" style={{ ...styles.btn, backgroundColor: '#3B82F6', color: 'white' }}>SUBMIT</button>
           </form>
@@ -1059,134 +825,63 @@ const HuskyScout = () => {
               <span style={{ fontWeight: 'bold', color: '#8B5CF6' }}>ALLIANCE PICKLIST</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: theme.muted }}>RANKED BY HYBRID SCORE</span>
-              <button onClick={resetPicklist} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>Reset Format?</button>
+              <span style={{ fontSize: '11px', color: theme.muted }}>{showDefaultStats ? 'SHOWING DEFAULT STATS' : 'CUSTOM DRAG & DROP ORDER'}</span>
+              <button onClick={() => setShowDefaultStats(!showDefaultStats)} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>
+                {showDefaultStats ? 'View Custom Order' : 'View Default Stats'}
+              </button>
             </div>
 
             {previewAiOrder && (aiRecommendedOrder.length > 0 || Object.keys(aiRecommendedCategories).length > 0) && (
               <div style={{ ...styles.card, border: `1px solid #F59E0B`, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <div>
-                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED AI PICKS</span>
-                  <span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span>
-                </div>
+                <div><span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED AI PICKS</span><span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span></div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <button 
-                    onClick={() => {
-                      setCustomOrders(prev => ({ ...prev, [selectedEvent]: aiRecommendedOrder }));
-                      setTeamCategories(prev => ({ 
-                        ...prev, 
-                        [selectedEvent]: { ...(prev[selectedEvent] || {}), ...aiRecommendedCategories } 
-                      }));
-                      setPreviewAiOrder(false);
-                    }} 
-                    style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
-                  >
-                    Approve
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setPreviewAiOrder(false);
-                      setAiRecommendedOrder([]);
-                      setAiRecommendedCategories({});
-                    }} 
-                    style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}
-                  >
-                    Discard
-                  </button>
+                  <button onClick={() => { setCustomOrders(prev => ({ ...prev, [selectedEvent]: aiRecommendedOrder })); setTeamCategories(prev => ({ ...prev, [selectedEvent]: { ...(prev[selectedEvent] || {}), ...aiRecommendedCategories } })); setPreviewAiOrder(false); }} style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Approve</button>
+                  <button onClick={() => { setPreviewAiOrder(false); setAiRecommendedOrder([]); setAiRecommendedCategories({}); }} style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Discard</button>
                 </div>
               </div>
             )}
 
             {picklist.length === 0 ? (
-              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No teams found for this event yet. Enter match schedule or scout teams to populate.</div>
+              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No teams found. Enter match schedule or scout to populate.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {picklist.map((item, index) => {
                   const isExpanded = expandedTeam === item.team;
-                  const eventKey = appMode === 'test' ? 'test_event' : selectedEvent;
-                  const teamHistory = history.filter(h => h.event === eventKey && String(h.data.team).trim() === String(item.team).trim());
+                  const teamHistory = history.filter(h => h.event === (appMode === 'test' ? 'test_event' : selectedEvent) && String(h.data.team).trim() === String(item.team).trim());
                   const pits = teamHistory.filter(h => h.type === 'pit');
                   const matchesFiltered = teamHistory.filter(h => h.type === 'match');
                   const teamOpr = oprs[item.team] !== undefined ? oprs[item.team] : 'N/A';
-                  
                   const tbaRankData = rankings.find(r => String(r.team_key).replace('frc', '') === String(item.team));
                   const tbaRank = tbaRankData ? tbaRankData.rank : 'N/A';
-
                   const eventCats = teamCategories[selectedEvent] || {};
                   const myCat = previewAiOrder ? (aiRecommendedCategories[item.team] || eventCats[item.team]) : eventCats[item.team];
 
                   let cardStyle = { ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '4px' };
                   if (myCat === 'first') cardStyle.borderLeft = `5px solid ${theme.green}`;
                   else if (myCat === 'second') cardStyle.borderLeft = `5px solid ${theme.yellow}`;
-                  else if (myCat === 'dnp') {
-                    cardStyle.borderLeft = `5px solid ${theme.red}`;
-                    cardStyle.backgroundColor = '#1F1111'; 
-                  }
+                  else if (myCat === 'dnp') { cardStyle.borderLeft = `5px solid ${theme.red}`; cardStyle.backgroundColor = '#1F1111'; }
 
                   return (
                     <div key={item.team} style={cardStyle}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div 
-                          onClick={() => setExpandedTeam(isExpanded ? null : item.team)}
-                          style={{ display: 'flex', alignItems: 'flex-start', gap: '15px', cursor: 'pointer', flex: 1 }}
-                        >
+                        <div onClick={() => setExpandedTeam(isExpanded ? null : item.team)} style={{ display: 'flex', alignItems: 'flex-start', gap: '15px', cursor: 'pointer', flex: 1 }}>
                           <span style={{ fontSize: '16px', fontWeight: '900', color: theme.green, minWidth: '24px', marginTop: '2px' }}>#{index + 1}</span>
                           <div>
-                            <span style={{ fontSize: '16px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              Team {item.team}
-                              <span style={{ fontSize: '10px', color: theme.muted, fontWeight: 'normal' }}>
-                                {isExpanded ? '▲ hide details' : '▼ show details'}
-                              </span>
-                            </span>
-                            <div style={{ fontSize: '11px', color: theme.muted, marginTop: '2px' }}>
-                              Off Avg: {item.avgOff} | Def Avg: {item.avgDef} | Hybrid: {item.hybrid}
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#3B82F6', marginTop: '2px', fontWeight: '600' }}>
-                              TBA Rank: {tbaRank} {tbaRankData && `(${tbaRankData.record.wins}-${tbaRankData.record.losses})`} | OPR: {teamOpr}
-                            </div>
-
-                            {/* Category Selector UI */}
+                            <span style={{ fontSize: '16px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>Team {item.team}<span style={{ fontSize: '10px', color: theme.muted, fontWeight: 'normal' }}>{isExpanded ? '▲ hide details' : '▼ show details'}</span></span>
+                            <div style={{ fontSize: '11px', color: theme.muted, marginTop: '2px' }}>Off Avg: {item.avgOff} | Def Avg: {item.avgDef} | Hybrid: {item.hybrid}</div>
+                            <div style={{ fontSize: '11px', color: '#3B82F6', marginTop: '2px', fontWeight: '600' }}>TBA Rank: {tbaRank} {tbaRankData && `(${tbaRankData.record.wins}-${tbaRankData.record.losses})`} | OPR: {teamOpr}</div>
                             <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'first'); }}
-                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'first' ? theme.green : 'transparent', color: myCat === 'first' ? '#000' : theme.green, border: `1px solid ${theme.green}`, cursor: 'pointer' }}>
-                                1st Pick
-                              </button>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'second'); }}
-                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'second' ? theme.yellow : 'transparent', color: myCat === 'second' ? '#000' : theme.yellow, border: `1px solid ${theme.yellow}`, cursor: 'pointer' }}>
-                                2nd Pick
-                              </button>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'dnp'); }}
-                                style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'dnp' ? theme.red : 'transparent', color: myCat === 'dnp' ? '#fff' : theme.red, border: `1px solid ${theme.red}`, cursor: 'pointer' }}>
-                                DNP
-                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'first'); }} style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'first' ? theme.green : 'transparent', color: myCat === 'first' ? '#000' : theme.green, border: `1px solid ${theme.green}`, cursor: 'pointer' }}>1st Pick</button>
+                              <button onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'second'); }} style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'second' ? theme.yellow : 'transparent', color: myCat === 'second' ? '#000' : theme.yellow, border: `1px solid ${theme.yellow}`, cursor: 'pointer' }}>2nd Pick</button>
+                              <button onClick={(e) => { e.stopPropagation(); toggleCategory(item.team, 'dnp'); }} style={{ fontSize: '9px', fontWeight: 'bold', padding: '3px 6px', borderRadius: '4px', backgroundColor: myCat === 'dnp' ? theme.red : 'transparent', color: myCat === 'dnp' ? '#fff' : theme.red, border: `1px solid ${theme.red}`, cursor: 'pointer' }}>DNP</button>
                             </div>
-
                           </div>
                         </div>
-
                         <div style={{ display: 'flex', gap: '6px' }}>
-                          <button 
-                            type="button"
-                            disabled={index === 0 || previewAiOrder} 
-                            onClick={(e) => { e.stopPropagation(); moveTeam(index, 'up'); }} 
-                            style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === 0 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === 0 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
-                          >
-                            ▲
-                          </button>
-                          <button 
-                            type="button"
-                            disabled={index === picklist.length - 1 || previewAiOrder} 
-                            onClick={(e) => { e.stopPropagation(); moveTeam(index, 'down'); }} 
-                            style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === picklist.length - 1 || previewAiOrder) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === picklist.length - 1 || previewAiOrder) ? 'not-allowed' : 'pointer' }}
-                          >
-                            ▼
-                          </button>
+                          <button type="button" disabled={index === 0 || previewAiOrder || showDefaultStats} onClick={(e) => { e.stopPropagation(); moveTeam(index, 'up'); }} style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === 0 || previewAiOrder || showDefaultStats) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === 0 || previewAiOrder || showDefaultStats) ? 'not-allowed' : 'pointer' }}>▲</button>
+                          <button type="button" disabled={index === picklist.length - 1 || previewAiOrder || showDefaultStats} onClick={(e) => { e.stopPropagation(); moveTeam(index, 'down'); }} style={{ width: '32px', height: '32px', borderRadius: '6px', border: `1px solid ${theme.border}`, backgroundColor: '#1E293B', color: (index === picklist.length - 1 || previewAiOrder || showDefaultStats) ? theme.border : 'white', fontWeight: 'bold', cursor: (index === picklist.length - 1 || previewAiOrder || showDefaultStats) ? 'not-allowed' : 'pointer' }}>▼</button>
                         </div>
                       </div>
-
                       {isExpanded && (
                         <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '12px', marginTop: '8px' }}>
                           {pits.length > 0 ? (
@@ -1194,32 +889,22 @@ const HuskyScout = () => {
                               <h4 style={{ margin: '0 0 6px 0', fontSize: '11px', color: '#3B82F6', fontWeight: '900' }}>PIT DATA</h4>
                               {pits.map(p => (
                                 <div key={p.id} style={{ fontSize: '12px', backgroundColor: '#0F172A', padding: '10px', borderRadius: '8px', border: `1px solid ${theme.border}` }}>
+                                  <div style={{ color: theme.muted, fontSize: '10px', marginBottom: '4px' }}>Scouted by: {p.scouter || 'Unknown'}</div>
                                   <div>Drivetrain: {p.data.drivetrain} | Mechanism: {p.data.mechanism}</div>
                                   {p.data.notes && <div style={{ fontStyle: 'italic', color: theme.muted, marginTop: '4px' }}>"{p.data.notes}"</div>}
-                                  {p.data.photos && p.data.photos.length > 0 && (
-                                    <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
-                                      {p.data.photos.map((pht, idx) => (
-                                        <img key={idx} src={pht} alt="pit-scout-img" style={{ width: '60px', height: '60px', borderRadius: '6px', objectFit: 'cover', border: `1px solid ${theme.border}` }} />
-                                      ))}
-                                    </div>
-                                  )}
+                                  {p.data.photos && p.data.photos.length > 0 && <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>{p.data.photos.map((pht, idx) => <img key={idx} src={pht} alt="pit-img" style={{ width: '60px', height: '60px', borderRadius: '6px', objectFit: 'cover', border: `1px solid ${theme.border}` }} />)}</div>}
                                 </div>
                               ))}
                             </div>
-                          ) : (
-                            <div style={{ fontSize: '11px', color: theme.muted, marginBottom: '12px', fontStyle: 'italic' }}>No pit data registered.</div>
-                          )}
-
+                          ) : <div style={{ fontSize: '11px', color: theme.muted, marginBottom: '12px', fontStyle: 'italic' }}>No pit data.</div>}
                           {matchesFiltered.length > 0 ? (
                             <div>
                               <h4 style={{ margin: '0 0 6px 0', fontSize: '11px', color: theme.green, fontWeight: '900' }}>MATCH HISTORY ({matchesFiltered.length})</h4>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {matchesFiltered.map(m => (
                                   <div key={m.id} style={{ fontSize: '12px', backgroundColor: '#0F172A', padding: '10px', borderRadius: '8px', border: `1px solid ${theme.border}` }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
-                                      <span>QM {m.data.match}</span>
-                                      <span style={{ color: theme.green }}>Est. Score: {calculateScore(m.data.autoPieces, m.data.teleopPieces, m.data.climb)} pts</span>
-                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}><span>QM {m.data.match}</span><span style={{ color: theme.green }}>Score: {calculateScore(m.data.autoPieces, m.data.teleopPieces, m.data.climb)} pts</span></div>
+                                    <div style={{ color: theme.muted, fontSize: '10px', marginBottom: '4px' }}>Scouted by: {m.scouter || 'Unknown'}</div>
                                     <div style={{ marginTop: '2px' }}>Auto: {m.data.autoPieces} | Teleop: {m.data.teleopPieces} | Climb: {m.data.climb ? 'Yes' : 'No'}</div>
                                     <div>Def Quality: {m.data.defenseQuality} | Fouls: {m.data.defenseFouls}</div>
                                     {m.data.notes && <div style={{ fontStyle: 'italic', color: theme.muted, marginTop: '4px' }}>"{m.data.notes}"</div>}
@@ -1227,9 +912,7 @@ const HuskyScout = () => {
                                 ))}
                               </div>
                             </div>
-                          ) : (
-                            <div style={{ fontSize: '11px', color: theme.muted, fontStyle: 'italic' }}>No matches recorded.</div>
-                          )}
+                          ) : <div style={{ fontSize: '11px', color: theme.muted, fontStyle: 'italic' }}>No match data.</div>}
                         </div>
                       )}
                     </div>
@@ -1237,28 +920,18 @@ const HuskyScout = () => {
                 })}
               </div>
             )}
-
             <div style={{ ...styles.card, marginTop: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <span style={{ fontSize: '14px', fontWeight: '800', color: '#8B5CF6' }}>AI Strategy</span>
-              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}><span style={{ fontSize: '14px', fontWeight: '800', color: '#8B5CF6' }}>AI Strategy</span></div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '15px' }}>
                 <div>
                   <label style={{ fontSize: '10px', color: theme.muted }}>Strategy</label>
                   <select style={{ ...styles.input, marginTop: '5px' }} value={aiStrategy} onChange={e => setAiStrategy(e.target.value)}>
-                    <option value="balanced">Balanced</option>
-                    <option value="offense">Offense</option>
-                    <option value="defense">Defense</option>
+                    <option value="balanced">Balanced</option><option value="offense">Offense</option><option value="defense">Defense</option>
                   </select>
                 </div>
-                <div>
-                  <label style={{ fontSize: '10px', color: theme.muted }}>Info</label>
-                  <textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourInfo} onChange={e => setOurInfo(e.target.value)} />
-                </div>
+                <div><label style={{ fontSize: '10px', color: theme.muted }}>Info</label><textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourInfo} onChange={e => setOurInfo(e.target.value)} /></div>
               </div>
-              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>
-                {loadingAi ? 'Loading' : 'Generate Suggestions/Report'}
-              </button>
+              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>{loadingAi ? 'Loading...' : 'Generate Suggestions'}</button>
               {aiError && <div style={{ color: '#EF4444', fontSize: '12px', marginTop: '10px', fontWeight: 'bold' }}>{aiError}</div>}
               {aiSuggestions && (
                 <div style={{ marginTop: '15px', padding: '12px', backgroundColor: '#0F172A', borderRadius: '10px', border: `1px solid ${theme.border}`, maxHeight: '300px', overflowY: 'auto' }}>
@@ -1272,44 +945,24 @@ const HuskyScout = () => {
         {view === 'ourMatches' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}>
-              <button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
-              <span style={{ fontWeight: 'bold', color: '#EC4899' }}>4585 MATCHES</span>
+              <button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button><span style={{ fontWeight: 'bold', color: '#EC4899' }}>4585 MATCHES</span>
             </div>
             {ourMatches.length === 0 ? (
-              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No matches loaded for team 4585 at this event.</div>
+              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No matches loaded.</div>
             ) : (
               ourMatches.map(m => {
                 const isRed = m.alliances.red.teams.some(t => String(t.replace(/^frc/, '')).trim() === '4585');
                 return (
                   <div key={m.match_number} style={{ ...styles.card, borderLeft: `4px solid ${isRed ? '#EF4444' : '#3B82F6'}` }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 'bold' }}>Match QM {m.match_number}</span>
-                      <span style={{ fontSize: '12px', color: isRed ? '#EF4444' : '#3B82F6', fontWeight: 'bold' }}>
-                        {isRed ? 'RED ALLIANCE' : 'BLUE ALLIANCE'}
-                      </span>
-                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}><span style={{ fontWeight: 'bold' }}>Match QM {m.match_number}</span><span style={{ fontSize: '12px', color: isRed ? '#EF4444' : '#3B82F6', fontWeight: 'bold' }}>{isRed ? 'RED ALLIANCE' : 'BLUE ALLIANCE'}</span></div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                       <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#EF44441F', border: '1px solid #EF44443F' }}>
                         <div style={{ fontSize: '10px', color: '#EF4444', fontWeight: 'bold', marginBottom: '4px' }}>RED</div>
-                        {m.alliances.red.teams.map(t => {
-                          const num = String(t.replace(/^frc/, '')).trim();
-                          return (
-                            <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>
-                              Team {num} {num === '4585' && '★'}
-                            </div>
-                          );
-                        })}
+                        {m.alliances.red.teams.map(t => { const num = String(t.replace(/^frc/, '')).trim(); return <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>Team {num} {num === '4585' && '★'}</div>; })}
                       </div>
                       <div style={{ padding: '6px', borderRadius: '6px', backgroundColor: '#3B82F61F', border: '1px solid #3B82F63F' }}>
                         <div style={{ fontSize: '10px', color: '#3B82F6', fontWeight: 'bold', marginBottom: '4px' }}>BLUE</div>
-                        {m.alliances.blue.teams.map(t => {
-                          const num = String(t.replace(/^frc/, '')).trim();
-                          return (
-                            <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>
-                              Team {num} {num === '4585' && '★'}
-                            </div>
-                          );
-                        })}
+                        {m.alliances.blue.teams.map(t => { const num = String(t.replace(/^frc/, '')).trim(); return <div key={t} style={{ fontSize: '13px', fontWeight: num === '4585' ? 'bold' : 'normal', color: num === '4585' ? theme.green : 'white' }}>Team {num} {num === '4585' && '★'}</div>; })}
                       </div>
                     </div>
                   </div>
@@ -1321,84 +974,50 @@ const HuskyScout = () => {
 
         {view === 'history' && (
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}>
-              <button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button>
-              <span style={{ fontWeight: 'bold', color: theme.green }}>ARCHIVE</span>
-            </div>
-            {scoutedEventsInHistory.length === 0 ? (
-              <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div>
-            ) : (
-              scoutedEventsInHistory.map(eventKey => {
-                const eventName = eventKey === 'test_event' ? 'TEST MODE' : (events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase());
-                const eventRecords = history.filter(h => h.event === eventKey);
-                const matchRecords = eventRecords.filter(h => h.type === 'match');
-                const pitRecords = eventRecords.filter(h => h.type === 'pit');
-
-                return (
-                  <div key={eventKey} style={{ ...styles.card, marginBottom: '20px' }}>
-                    <h2 style={{ fontSize: '18px', color: theme.green, margin: '0 0 15px 0', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>
-                      {eventName}
-                    </h2>
-                    
-                    <div style={{ marginBottom: '20px' }}>
-                      <h3 style={{ fontSize: '14px', color: '#3B82F6', margin: '0 0 10px 0', fontWeight: '900' }}>PIT SCOUTING</h3>
-                      {pitRecords.length === 0 ? (
-                        <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No pit records for this event.</div>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                          {pitRecords.map(record => (
-                            <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
-                                <span style={{ fontWeight: 'bold', color: '#3B82F6' }}>Team {record.data.team}</span>
-                                <span>{record.timestamp}</span>
-                              </div>
-                              <div style={{ marginTop: '6px', fontSize: '13px' }}>
-                                <div>Drivetrain: {record.data.drivetrain}</div>
-                                <div>Mechanism: {record.data.mechanism}</div>
-                                {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
-                                {record.data.photos && record.data.photos.length > 0 && (
-                                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
-                                    {record.data.photos.map((pht, idx) => (
-                                      <img key={idx} src={pht} alt="pit-scout" style={{ width: '60px', height: '60px', borderRadius: '6px', objectFit: 'cover' }} />
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}><button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button><span style={{ fontWeight: 'bold', color: theme.green }}>ARCHIVE</span></div>
+            {scoutedEventsInHistory.length === 0 ? <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div> : scoutedEventsInHistory.map(eventKey => {
+              const eventName = eventKey === 'test_event' ? 'TEST MODE' : (events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase());
+              const eventRecords = history.filter(h => h.event === eventKey);
+              const matchRecords = eventRecords.filter(h => h.type === 'match');
+              const pitRecords = eventRecords.filter(h => h.type === 'pit');
+              return (
+                <div key={eventKey} style={{ ...styles.card, marginBottom: '20px' }}>
+                  <h2 style={{ fontSize: '18px', color: theme.green, margin: '0 0 15px 0', borderBottom: `1px solid ${theme.border}`, paddingBottom: '8px' }}>{eventName}</h2>
+                  <div style={{ marginBottom: '20px' }}>
+                    <h3 style={{ fontSize: '14px', color: '#3B82F6', margin: '0 0 10px 0', fontWeight: '900' }}>PIT SCOUTING</h3>
+                    {pitRecords.length === 0 ? <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No pit records.</div> : <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {pitRecords.map(record => (
+                        <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}><span style={{ fontWeight: 'bold', color: '#3B82F6' }}>Team {record.data.team}</span><span>{record.timestamp}</span></div>
+                          <div style={{ fontSize: '10px', color: theme.muted, fontStyle: 'italic', marginBottom: '4px' }}>Scouted by: {record.scouter || 'Unknown'}</div>
+                          <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                            <div>Drivetrain: {record.data.drivetrain} | Mechanism: {record.data.mechanism}</div>
+                            {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                          </div>
                         </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <h3 style={{ fontSize: '14px', color: theme.green, margin: '0 0 10px 0', fontWeight: '900' }}>MATCH SCOUTING</h3>
-                      {matchRecords.length === 0 ? (
-                        <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No match records for this event.</div>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                          {matchRecords.map(record => (
-                            <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}>
-                                <span style={{ fontWeight: 'bold', color: theme.green }}>Match {record.data.match} | Team {record.data.team}</span>
-                                <span>{record.timestamp}</span>
-                              </div>
-                              <div style={{ marginTop: '6px', fontSize: '13px' }}>
-                                <div>Auto: {record.data.autoPieces} | Teleop: {record.data.teleopPieces} | Climb: {record.data.climb ? 'Yes' : 'No'}</div>
-                                <div>Defense Quality: {record.data.defenseQuality} (Fouls: {record.data.defenseFouls})</div>
-                                <div style={{ fontWeight: 'bold', color: theme.green, marginTop: '4px' }}>
-                                  Est. Score: {calculateScore(record.data.autoPieces, record.data.teleopPieces, record.data.climb)} pts
-                                </div>
-                                {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                      ))}
+                    </div>}
                   </div>
-                );
-              })
-            )}
+                  <div>
+                    <h3 style={{ fontSize: '14px', color: theme.green, margin: '0 0 10px 0', fontWeight: '900' }}>MATCH SCOUTING</h3>
+                    {matchRecords.length === 0 ? <div style={{ fontSize: '12px', color: theme.muted, fontStyle: 'italic' }}>No match records.</div> : <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {matchRecords.map(record => (
+                        <div key={record.id} style={{ padding: '12px', borderRadius: '10px', backgroundColor: '#0F172A', border: `1px solid ${theme.border}` }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.muted }}><span style={{ fontWeight: 'bold', color: theme.green }}>Match {record.data.match} | Team {record.data.team}</span><span>{record.timestamp}</span></div>
+                          <div style={{ fontSize: '10px', color: theme.muted, fontStyle: 'italic', marginBottom: '4px' }}>Scouted by: {record.scouter || 'Unknown'}</div>
+                          <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                            <div>Auto: {record.data.autoPieces} | Teleop: {record.data.teleopPieces} | Climb: {record.data.climb ? 'Yes' : 'No'}</div>
+                            <div>Defense Quality: {record.data.defenseQuality} (Fouls: {record.data.defenseFouls})</div>
+                            <div style={{ fontWeight: 'bold', color: theme.green, marginTop: '4px' }}>Est. Score: {calculateScore(record.data.autoPieces, record.data.teleopPieces, record.data.climb)} pts</div>
+                            {record.data.notes && <div style={{ color: theme.muted, marginTop: '4px', fontStyle: 'italic' }}>"{record.data.notes}"</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </main>
@@ -1407,8 +1026,6 @@ const HuskyScout = () => {
 };
 
 const rootElement = document.getElementById('root');
-if (rootElement) {
-  ReactDOM.createRoot(rootElement).render(<HuskyScout />);
-}
+if (rootElement) ReactDOM.createRoot(rootElement).render(<HuskyScout />);
 
 export default HuskyScout;

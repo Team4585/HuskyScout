@@ -1,33 +1,24 @@
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, setDoc } from 'firebase/firestore';
+
 export const handler = async (event, context) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+  if (!event.body) return;
+
+  const body = JSON.parse(event.body);
+  const { info, strategy, payload, rankings, jobId, fbConfig } = body;
+  const apiKey = process.env.PROCESS_AI_KEY;
+
+  if (!apiKey) {
+    console.error("Missing PROCESS_AI_KEY in Netlify environment variables.");
+    return;
   }
 
+  const app = initializeApp(fbConfig);
+  const db = getFirestore(app);
+  const jobRef = doc(db, 'ai_jobs', jobId);
+
   try {
-    if (!event.body) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ success: false, error: 'Missing request body' })
-      };
-    }
-
-    const body = JSON.parse(event.body);
-    const info = body.info;
-    const strategy = body.strategy;
-    const payload = body.payload;
-    const rankings = body.rankings;
-
-    const apiKey = process.env.PROCESS_AI_KEY;
-
-    if (!apiKey) {
-      return {
-        statusCode: 500,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ success: false, error: 'Server AI configuration is missing. Please redeploy.' })
-      };
-    }
-
+    // This is your exact detailed prompt
     const prompt = `You are an elite FIRST Robotics Competition (FRC) scouting analyst and drive coach. Your task is to provide alliance selection picking suggestions for Team 4585 "Husky Robotics".
 
 --- ALLIANCE STRATEGY FOCUS ---
@@ -58,6 +49,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
   "do_not_pick": ["TeamNumber6", "TeamNumber7"]
 }`;
 
+    // 2. Fetch from OpenRouter (Can safely take up to 15 minutes now!)
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -69,67 +61,39 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
       body: JSON.stringify({
         model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 10000, 
         response_format: { type: 'json_object' }
       })
     });
 
     if (!response.ok) {
-      const rawErr = await response.text();
-      return {
-        statusCode: 502,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ success: false, error: 'Upstream API error: ' + rawErr })
-      };
+      const errText = await response.text();
+      throw new Error("Upstream API error: " + errText);
     }
 
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
 
+    // Safely extract the JSON block in case the AI wraps it in markdown (e.g., ```json)
     let jsonText = text.trim();
     const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       jsonText = jsonMatch[0];
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch (parseError) {
-      console.error("AI returned invalid JSON:", jsonText);
-      return {
-        statusCode: 200, 
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          success: false, 
-          error: 'The AI generated an incomplete response or ran out of tokens. Please try again.' 
-        })
-      };
-    }
+    const parsed = JSON.parse(jsonText);
 
-    const report = parsed.report || text;
-    const recommended_order = Array.isArray(parsed.recommended_order) ? parsed.recommended_order : [];
-    const first_picks = Array.isArray(parsed.first_picks) ? parsed.first_picks : [];
-    const second_picks = Array.isArray(parsed.second_picks) ? parsed.second_picks : [];
-    const do_not_pick = Array.isArray(parsed.do_not_pick) ? parsed.do_not_pick : [];
+    // 3. Save the successful result to Firebase so React can find it
+    await setDoc(jobRef, {
+      report: parsed.report || text,
+      recommended_order: parsed.recommended_order || [],
+      first_picks: parsed.first_picks || [],
+      second_picks: parsed.second_picks || [],
+      do_not_pick: parsed.do_not_pick || []
+    });
 
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        success: true,
-        report,
-        recommended_order,
-        first_picks,
-        second_picks,
-        do_not_pick
-      })
-    };
   } catch (err) {
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ success: false, error: err.message })
-    };
+    console.error("AI Processing Error: ", err);
+    // Save error to Firebase so the frontend stops spinning and shows the error to the user
+    await setDoc(jobRef, { error: err.message || 'Failed to process AI request. Please try again.' });
   }
 };
