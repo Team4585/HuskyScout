@@ -48,7 +48,6 @@ const calculateScore = (auto, teleop, climb) => {
   return (Number(auto) * 2) + Number(teleop) + (climb ? 5 : 0);
 };
 
-// Canvas-based image compression to avoid Firebase 1MB doc limits
 const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.7) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -158,7 +157,6 @@ const HuskyScout = () => {
 
   const todayStr = useMemo(() => getLocalDateString(), []);
 
-  // Debounce logic for the event input
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedEvent(selectedEvent);
@@ -173,21 +171,26 @@ const HuskyScout = () => {
   const appMode = useMemo(() => {
     if (manualEventMode) return 'active';
     if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) return 'test';
+    
+    // FIX: Past events are now fully "active" so you can still view their picklists
+    if (todayStr > activeEventDetails.end_date) return 'active';
+
     const getDaysDifference = (dateStr1, dateStr2) => {
       const d1 = new Date(dateStr1 + 'T00:00:00');
       const d2 = new Date(dateStr2 + 'T00:00:00');
       return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
     };
     const daysToStart = getDaysDifference(activeEventDetails.start_date, todayStr);
+    
     if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) return 'active';
     else if (daysToStart > 0 && daysToStart <= 7) return 'preevent';
     return 'test';
   }, [activeEventDetails, todayStr, manualEventMode]);
 
-  // Ensure matching sync logic everywhere
+  // FIX: Always use the exact event code, never a fake 'test_event' bucket. Test mode merely flags the documents for deletion.
   const resolvedEvent = useMemo(() => {
-    return appMode === 'test' ? 'test_event' : String(selectedEvent || '').trim();
-  }, [appMode, selectedEvent]);
+    return String(selectedEvent || '').trim();
+  }, [selectedEvent]);
 
   const unsyncedCount = useMemo(() => {
     return history.filter(h => !h.synced).length;
@@ -333,7 +336,8 @@ const HuskyScout = () => {
         if (res.ok) {
           const data = await res.json();
           const todayStrLocal = getLocalDateString();
-          const filtered = data.filter(ev => ev.year >= CONFIG.YEAR && (!ev.end_date || ev.end_date >= todayStrLocal));
+          // Allows viewing recent events even if end date passed within the same year
+          const filtered = data.filter(ev => ev.year >= CONFIG.YEAR);
           setEvents(filtered);
           localStorage.setItem('husky_scout_events', JSON.stringify(filtered));
           if (filtered.length > 0 && !selectedEvent) {
@@ -371,7 +375,7 @@ const HuskyScout = () => {
               setMatches(qmMatches);
               localStorage.setItem(`husky_scout_matches_${debouncedEvent}`, JSON.stringify(qmMatches));
             }
-          } catch(e) { /* silently fail bad JSON on 500s */ }
+          } catch(e) {}
         } else {
           if (cachedMatches.length === 0) setMatches([]);
         }
@@ -408,7 +412,7 @@ const HuskyScout = () => {
               setOprs(normalized);
               localStorage.setItem(`husky_scout_oprs_${debouncedEvent}`, JSON.stringify(normalized));
             }
-          } catch(e) { /* silently fail bad JSON on 500s */ }
+          } catch(e) {}
         }
       } catch (e) {}
     };
@@ -439,7 +443,7 @@ const HuskyScout = () => {
                setRankings(data);
                localStorage.setItem(`husky_scout_rankings_${debouncedEvent}`, JSON.stringify(data));
              }
-          } catch(e) { /* silently fail bad JSON on 500s */ }
+          } catch(e) {}
         }
       } catch (e) {}
     };
@@ -489,9 +493,12 @@ const HuskyScout = () => {
       if (m.alliances?.red?.teams) m.alliances.red.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
       if (m.alliances?.blue?.teams) m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
     });
+    
+    // Add teams that might not be in the match schedule yet but were scouted under this event code
     history.forEach(h => {
       if (h.event === resolvedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
     });
+    
     const allTeams = Array.from(uniqueTeams);
 
     const teamsWithStats = allTeams.map(t => {
@@ -507,7 +514,7 @@ const HuskyScout = () => {
       return { team: t, avgOff, avgDef, hybrid };
     });
 
-    const activeOrder = showDefaultStats ? null : ((previewAiOrder && aiRecommendedOrder.length > 0) ? aiRecommendedOrder : customOrders[selectedEvent]);
+    const activeOrder = showDefaultStats ? null : ((previewAiOrder && aiRecommendedOrder.length > 0) ? aiRecommendedOrder : customOrders[resolvedEvent]);
 
     if (activeOrder) {
       const savedSet = new Set(activeOrder.map(val => String(val).trim()));
@@ -517,7 +524,7 @@ const HuskyScout = () => {
     } else {
       return teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
     }
-  }, [selectedEvent, resolvedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
+  }, [resolvedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
 
   const moveTeam = (index, direction) => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
@@ -525,14 +532,14 @@ const HuskyScout = () => {
     const updated = [...picklist];
     const [movedItem] = updated.splice(index, 1);
     updated.splice(newIndex, 0, movedItem);
-    setCustomOrders(prev => ({ ...prev, [selectedEvent]: updated.map(t => String(t.team).trim()) }));
+    setCustomOrders(prev => ({ ...prev, [resolvedEvent]: updated.map(t => String(t.team).trim()) }));
   };
 
   const toggleCategory = (team, cat) => {
     setTeamCategories(prev => {
-      const eventCats = prev[selectedEvent] || {};
+      const eventCats = prev[resolvedEvent] || {};
       const newCat = eventCats[team] === cat ? null : cat;
-      return { ...prev, [selectedEvent]: { ...eventCats, [team]: newCat } };
+      return { ...prev, [resolvedEvent]: { ...eventCats, [team]: newCat } };
     });
   };
 
@@ -568,7 +575,6 @@ const HuskyScout = () => {
         ? rankings.map(r => `Rank ${r.rank}: Team ${String(r.team_key).replace('frc', '')} (W-L-T: ${r.record.wins}-${r.record.losses}-${r.record.ties})`).join('\n')
         : '';
 
-      // Trigger the background background function execution
       const res = await fetch('/.netlify/functions/process-ai-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -588,7 +594,6 @@ const HuskyScout = () => {
         throw new Error(`Failed to trigger AI job: ${errText}`);
       }
 
-      // Listen for updates from Firestore asynchronously written by the background function
       let timeoutId;
       const unsubscribe = onSnapshot(jobRef, 
         (docSnap) => {
@@ -623,12 +628,11 @@ const HuskyScout = () => {
         }, 
         (err) => {
           clearTimeout(timeoutId);
-          setAiError('Permission denied reading AI results. Check Firebase rules.');
+          setAiError('Permission denied reading AI results. Check Firebase Rules.');
           setLoadingAi(false);
         }
       );
 
-      // Safeguard timeout (15 minutes max matching background function capacity)
       timeoutId = setTimeout(() => {
         unsubscribe();
         if (loadingAi) {
@@ -802,7 +806,7 @@ const HuskyScout = () => {
                 <input style={{ ...styles.input, backgroundColor: '#0F172A', color: theme.muted, cursor: 'not-allowed', border: `1px solid ${theme.border}` }} value={activeEventDetails ? activeEventDetails.name : (selectedEvent || 'No active event detected')} readOnly />
               )}
               <div style={{ marginTop: '10px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center' }}>
-                {appMode === 'test' && <span style={{ color: '#F59E0B' }}>TEST MODE (Data deletes daily)</span>}
+                {appMode === 'test' && <span style={{ color: '#F59E0B' }}>TEST MODE (Data auto-deletes)</span>}
                 {appMode === 'preevent' && <span style={{ color: '#3B82F6' }}>PRE-EVENT MODE (Pit scout only)</span>}
                 {appMode === 'active' && <span style={{ color: theme.green }}>EVENT ACTIVE</span>}
               </div>
@@ -931,7 +935,7 @@ const HuskyScout = () => {
               <div style={{ ...styles.card, border: `1px solid #F59E0B`, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div><span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED AI PICKS</span><span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span></div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <button onClick={() => { setCustomOrders(prev => ({ ...prev, [selectedEvent]: aiRecommendedOrder })); setTeamCategories(prev => ({ ...prev, [selectedEvent]: { ...(prev[selectedEvent] || {}), ...aiRecommendedCategories } })); setPreviewAiOrder(false); }} style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Approve</button>
+                  <button onClick={() => { setCustomOrders(prev => ({ ...prev, [resolvedEvent]: aiRecommendedOrder })); setTeamCategories(prev => ({ ...prev, [resolvedEvent]: { ...(prev[resolvedEvent] || {}), ...aiRecommendedCategories } })); setPreviewAiOrder(false); }} style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Approve</button>
                   <button onClick={() => { setPreviewAiOrder(false); setAiRecommendedOrder([]); setAiRecommendedCategories({}); }} style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Discard</button>
                 </div>
               </div>
@@ -949,7 +953,7 @@ const HuskyScout = () => {
                   const teamOpr = oprs[item.team] !== undefined ? oprs[item.team] : 'N/A';
                   const tbaRankData = rankings.find(r => String(r.team_key).replace('frc', '') === String(item.team));
                   const tbaRank = tbaRankData ? tbaRankData.rank : 'N/A';
-                  const eventCats = teamCategories[selectedEvent] || {};
+                  const eventCats = teamCategories[resolvedEvent] || {};
                   const myCat = previewAiOrder ? (aiRecommendedCategories[item.team] || eventCats[item.team]) : eventCats[item.team];
 
                   let cardStyle = { ...styles.card, margin: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '4px' };
@@ -1072,7 +1076,7 @@ const HuskyScout = () => {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}><button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button><span style={{ fontWeight: 'bold', color: theme.green }}>ARCHIVE</span></div>
             {scoutedEventsInHistory.length === 0 ? <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div> : scoutedEventsInHistory.map(eventKey => {
-              const eventName = eventKey === 'test_event' ? 'TEST MODE' : (events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase());
+              const eventName = events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase();
               const eventRecords = history.filter(h => h.event === eventKey);
               const matchRecords = eventRecords.filter(h => h.type === 'match');
               const pitRecords = eventRecords.filter(h => h.type === 'pit');
