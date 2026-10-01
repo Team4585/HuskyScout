@@ -1,24 +1,29 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, setDoc } from 'firebase/firestore';
 
 export const handler = async (event, context) => {
-  if (!event.body) return;
+  if (!event.body) return { statusCode: 400, body: 'Missing body' };
 
-  const body = JSON.parse(event.body);
-  const { info, strategy, payload, rankings, jobId, fbConfig } = body;
-  const apiKey = process.env.PROCESS_AI_KEY;
-
-  if (!apiKey) {
-    console.error("Missing PROCESS_AI_KEY in Netlify environment variables.");
-    return;
-  }
-
-  const app = initializeApp(fbConfig);
-  const db = getFirestore(app);
-  const jobRef = doc(db, 'ai_jobs', jobId);
+  let jobRef;
 
   try {
-    // This is your exact detailed prompt
+    const body = JSON.parse(event.body);
+    const { info, strategy, payload, rankings, jobId, fbConfig } = body;
+    const apiKey = process.env.PROCESS_AI_KEY;
+
+    if (!apiKey) {
+      throw new Error("Missing PROCESS_AI_KEY in Netlify environment variables.");
+    }
+    if (!jobId || !fbConfig) {
+      throw new Error("Missing required Firebase config or Job ID.");
+    }
+
+    // FIX 1: Prevent "App already exists" crash on serverless warm starts
+    const app = getApps().length === 0 ? initializeApp(fbConfig) : getApps()[0];
+    const db = getFirestore(app);
+    jobRef = doc(db, 'ai_jobs', jobId);
+
+    // Prompt definition
     const prompt = `You are an elite FIRST Robotics Competition (FRC) scouting analyst and drive coach. Your task is to provide alliance selection picking suggestions for Team 4585 "Husky Robotics".
 
 --- ALLIANCE STRATEGY FOCUS ---
@@ -49,7 +54,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
   "do_not_pick": ["TeamNumber6", "TeamNumber7"]
 }`;
 
-    // 2. Fetch from OpenRouter (Can safely take up to 15 minutes now!)
+    // Fetch from OpenRouter
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -61,7 +66,8 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
       body: JSON.stringify({
         model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' }
+        // Note: Some free OpenRouter models might ignore response_format, so the regex fallback below is great
+        response_format: { type: 'json_object' } 
       })
     });
 
@@ -73,7 +79,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
 
-    // Safely extract the JSON block in case the AI wraps it in markdown (e.g., ```json)
+    // Safely extract the JSON block
     let jsonText = text.trim();
     const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -82,7 +88,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
 
     const parsed = JSON.parse(jsonText);
 
-    // 3. Save the successful result to Firebase so React can find it
+    // Save the successful result to Firebase
     await setDoc(jobRef, {
       report: parsed.report || text,
       recommended_order: parsed.recommended_order || [],
@@ -91,9 +97,21 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
       do_not_pick: parsed.do_not_pick || []
     });
 
+    // FIX 2: Return a standard success status code for Netlify to terminate gracefully
+    return { statusCode: 200, body: JSON.stringify({ success: true }) };
+
   } catch (err) {
     console.error("AI Processing Error: ", err);
-    // Save error to Firebase so the frontend stops spinning and shows the error to the user
-    await setDoc(jobRef, { error: err.message || 'Failed to process AI request. Please try again.' });
+    
+    // Fallback: Make sure we tell the frontend that it failed so it stops loading
+    if (jobRef) {
+      try {
+        await setDoc(jobRef, { error: err.message || 'Failed to process AI request. Please try again.' });
+      } catch (dbErr) {
+        console.error("Failed to write error to Firebase:", dbErr);
+      }
+    }
+
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };

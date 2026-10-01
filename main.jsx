@@ -48,6 +48,41 @@ const calculateScore = (auto, teleop, climb) => {
   return (Number(auto) * 2) + Number(teleop) + (climb ? 5 : 0);
 };
 
+// Canvas-based image compression to avoid Firebase 1MB doc limits
+const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.7) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round(height * (maxWidth / width));
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round(width * (maxHeight / height));
+            height = maxHeight;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = error => reject(error);
+    };
+    reader.onerror = error => reject(error);
+  });
+};
+
 const Counter = ({ label, value, onUpdate }) => (
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
     <span style={{ fontSize: '14px', fontWeight: '600' }}>{label}</span>
@@ -149,6 +184,11 @@ const HuskyScout = () => {
     return 'test';
   }, [activeEventDetails, todayStr, manualEventMode]);
 
+  // Ensure matching sync logic everywhere
+  const resolvedEvent = useMemo(() => {
+    return appMode === 'test' ? 'test_event' : String(selectedEvent || '').trim();
+  }, [appMode, selectedEvent]);
+
   const unsyncedCount = useMemo(() => {
     return history.filter(h => !h.synced).length;
   }, [history]);
@@ -231,7 +271,9 @@ const HuskyScout = () => {
             remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { 
+        console.warn("Sync failed reading remote records. Check permissions or connection.");
+      }
     }
 
     const mergedMap = new Map();
@@ -251,7 +293,9 @@ const HuskyScout = () => {
           await addDoc(collection(firestoreDb, 'scouting_data'), toUpload);
           item.synced = true;
           listUpdated = true;
-        } catch (e) { break; }
+        } catch (e) { 
+          break; 
+        }
       }
       if (listUpdated) {
         const updatedList = mergedList.map(item => ({ ...item }));
@@ -327,7 +371,7 @@ const HuskyScout = () => {
               setMatches(qmMatches);
               localStorage.setItem(`husky_scout_matches_${debouncedEvent}`, JSON.stringify(qmMatches));
             }
-          } catch(e) { console.error("Invalid Match JSON"); }
+          } catch(e) { /* silently fail bad JSON on 500s */ }
         } else {
           if (cachedMatches.length === 0) setMatches([]);
         }
@@ -364,7 +408,7 @@ const HuskyScout = () => {
               setOprs(normalized);
               localStorage.setItem(`husky_scout_oprs_${debouncedEvent}`, JSON.stringify(normalized));
             }
-          } catch(e) { console.error("Invalid OPR JSON"); }
+          } catch(e) { /* silently fail bad JSON on 500s */ }
         }
       } catch (e) {}
     };
@@ -395,7 +439,7 @@ const HuskyScout = () => {
                setRankings(data);
                localStorage.setItem(`husky_scout_rankings_${debouncedEvent}`, JSON.stringify(data));
              }
-          } catch(e) { console.error("Invalid Rankings JSON"); }
+          } catch(e) { /* silently fail bad JSON on 500s */ }
         }
       } catch (e) {}
     };
@@ -438,7 +482,7 @@ const HuskyScout = () => {
   }, [history]);
 
   const picklist = useMemo(() => {
-    if (!selectedEvent) return [];
+    if (!resolvedEvent) return [];
 
     const uniqueTeams = new Set();
     matches.forEach(m => {
@@ -446,12 +490,12 @@ const HuskyScout = () => {
       if (m.alliances?.blue?.teams) m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
     });
     history.forEach(h => {
-      if (h.event === selectedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
+      if (h.event === resolvedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
     });
     const allTeams = Array.from(uniqueTeams);
 
     const teamsWithStats = allTeams.map(t => {
-      const teamMatches = history.filter(h => h.type === 'match' && h.event === selectedEvent && String(h.data.team).trim() === String(t).trim());
+      const teamMatches = history.filter(h => h.type === 'match' && h.event === resolvedEvent && String(h.data.team).trim() === String(t).trim());
       const avgOff = teamMatches.length > 0 ? parseFloat((teamMatches.reduce((sum, h) => sum + calculateScore(h.data.autoPieces, h.data.teleopPieces, h.data.climb), 0) / teamMatches.length).toFixed(1)) : 0;
       const playedDefMatches = teamMatches.filter(h => Number(h.data.defenseQuality || 0) > 0);
       const avgDef = playedDefMatches.length > 0 ? parseFloat((playedDefMatches.reduce((sum, h) => {
@@ -473,7 +517,7 @@ const HuskyScout = () => {
     } else {
       return teamsWithStats.sort((a, b) => b.hybrid - a.hybrid);
     }
-  }, [selectedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
+  }, [selectedEvent, resolvedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
 
   const moveTeam = (index, direction) => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
@@ -509,7 +553,7 @@ const HuskyScout = () => {
       const jobRef = doc(db, 'ai_jobs', jobId);
 
       const payloadData = picklist.map((item, index) => {
-        const teamHistory = history.filter(h => h.event === selectedEvent && String(h.data.team).trim() === String(item.team).trim());
+        const teamHistory = history.filter(h => h.event === resolvedEvent && String(h.data.team).trim() === String(item.team).trim());
         const pitRecords = teamHistory.filter(h => h.type === 'pit');
         const matchRecords = teamHistory.filter(h => h.type === 'match');
         const pitNotes = pitRecords.map(h => h.data.notes).filter(Boolean).join(' | ');
@@ -531,7 +575,7 @@ const HuskyScout = () => {
         body: JSON.stringify({
           jobId,
           fbConfig: firebaseConfig,
-          event: selectedEvent,
+          event: resolvedEvent,
           info: ourInfo,
           strategy: aiStrategy,
           payload: payloadData,
@@ -546,36 +590,43 @@ const HuskyScout = () => {
 
       // Listen for updates from Firestore asynchronously written by the background function
       let timeoutId;
-      const unsubscribe = onSnapshot(jobRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (data.error) {
-            clearTimeout(timeoutId);
-            unsubscribe();
-            setAiError(data.error);
-            setLoadingAi(false);
-          } else if (data.report || data.recommended_order) {
-            clearTimeout(timeoutId);
-            unsubscribe();
+      const unsubscribe = onSnapshot(jobRef, 
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data.error) {
+              clearTimeout(timeoutId);
+              unsubscribe();
+              setAiError(data.error);
+              setLoadingAi(false);
+            } else if (data.report || data.recommended_order) {
+              clearTimeout(timeoutId);
+              unsubscribe();
 
-            setAiSuggestions(data.report || 'No analysis report returned.');
-            
-            const parsedPendingCats = {};
-            (data.first_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'first');
-            (data.second_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'second');
-            (data.do_not_pick || []).forEach(t => parsedPendingCats[String(t).trim()] = 'dnp');
-            
-            setAiRecommendedCategories(parsedPendingCats);
+              setAiSuggestions(data.report || 'No analysis report returned.');
+              
+              const parsedPendingCats = {};
+              (data.first_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'first');
+              (data.second_picks || []).forEach(t => parsedPendingCats[String(t).trim()] = 'second');
+              (data.do_not_pick || []).forEach(t => parsedPendingCats[String(t).trim()] = 'dnp');
+              
+              setAiRecommendedCategories(parsedPendingCats);
 
-            if (Array.isArray(data.recommended_order)) {
-              setAiRecommendedOrder(data.recommended_order.map(val => String(val).trim()));
-              setPreviewAiOrder(true);
-              setShowDefaultStats(false);
+              if (Array.isArray(data.recommended_order)) {
+                setAiRecommendedOrder(data.recommended_order.map(val => String(val).trim()));
+                setPreviewAiOrder(true);
+                setShowDefaultStats(false);
+              }
+              setLoadingAi(false);
             }
-            setLoadingAi(false);
           }
+        }, 
+        (err) => {
+          clearTimeout(timeoutId);
+          setAiError('Permission denied reading AI results. Check Firebase rules.');
+          setLoadingAi(false);
         }
-      });
+      );
 
       // Safeguard timeout (15 minutes max matching background function capacity)
       timeoutId = setTimeout(() => {
@@ -629,13 +680,23 @@ const HuskyScout = () => {
     setView('menu');
   };
 
-  const handlePhotoUpload = (e) => {
-    Array.from(e.target.files).slice(0, 3 - (pitData.photos || []).length).forEach(file => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onloadend = () => setPitData(prev => ({ ...prev, photos: [...(prev.photos || []), reader.result].slice(0, 3) }));
-      reader.readAsDataURL(file);
-    });
+  const handlePhotoUpload = async (e) => {
+    const files = Array.from(e.target.files).slice(0, 3 - (pitData.photos || []).length);
+    const compressedPhotos = [];
+    
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue;
+      try {
+        const compressedBase64 = await compressImage(file, 800, 800, 0.7);
+        compressedPhotos.push(compressedBase64);
+      } catch (err) {
+        console.warn('Image compression failed', err);
+      }
+    }
+    
+    if (compressedPhotos.length > 0) {
+      setPitData(prev => ({ ...prev, photos: [...(prev.photos || []), ...compressedPhotos].slice(0, 3) }));
+    }
   };
 
   const removePhoto = (index) => {
@@ -645,7 +706,7 @@ const HuskyScout = () => {
   const saveToHistory = async (type, data) => {
     const record = { 
       id: Date.now(), type, scouter: currentUser, 
-      event: appMode === 'test' ? 'test_event' : selectedEvent, 
+      event: resolvedEvent, 
       data: { ...data, team: String(data.team).trim() }, 
       timestamp: new Date().toLocaleTimeString(),
       isTest: appMode === 'test', dateString: todayStr, synced: false
@@ -882,7 +943,7 @@ const HuskyScout = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {picklist.map((item, index) => {
                   const isExpanded = expandedTeam === item.team;
-                  const teamHistory = history.filter(h => h.event === (appMode === 'test' ? 'test_event' : selectedEvent) && String(h.data.team).trim() === String(item.team).trim());
+                  const teamHistory = history.filter(h => h.event === resolvedEvent && String(h.data.team).trim() === String(item.team).trim());
                   const pits = teamHistory.filter(h => h.type === 'pit');
                   const matchesFiltered = teamHistory.filter(h => h.type === 'match');
                   const teamOpr = oprs[item.team] !== undefined ? oprs[item.team] : 'N/A';
