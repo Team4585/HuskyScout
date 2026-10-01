@@ -57,7 +57,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        model: 'openrouter/free',
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' } 
       })
