@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, collection, addDoc, getDocs, doc, setDoc, getDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 const secureHash = async (username, password) => {
   const msgBuffer = new TextEncoder().encode(username.toLowerCase().trim() + password);
@@ -172,7 +172,6 @@ const HuskyScout = () => {
     if (manualEventMode) return 'active';
     if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) return 'test';
     
-    // FIX: Past events are now fully "active" so you can still view their picklists
     if (todayStr > activeEventDetails.end_date) return 'active';
 
     const getDaysDifference = (dateStr1, dateStr2) => {
@@ -187,7 +186,6 @@ const HuskyScout = () => {
     return 'test';
   }, [activeEventDetails, todayStr, manualEventMode]);
 
-  // FIX: Always use the exact event code, never a fake 'test_event' bucket. Test mode merely flags the documents for deletion.
   const resolvedEvent = useMemo(() => {
     return String(selectedEvent || '').trim();
   }, [selectedEvent]);
@@ -257,6 +255,33 @@ const HuskyScout = () => {
     initFirebase();
   }, [isOnline]);
 
+  // REAL-TIME FIREBASE PICKLIST LISTENER
+  useEffect(() => {
+    if (!db || !resolvedEvent) return;
+    const unsub = onSnapshot(doc(db, 'event_picklists', resolvedEvent), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.order) setCustomOrders(prev => ({ ...prev, [resolvedEvent]: data.order }));
+        if (data.categories) setTeamCategories(prev => ({ ...prev, [resolvedEvent]: data.categories }));
+      }
+    });
+    return () => unsub();
+  }, [db, resolvedEvent]);
+
+  // HELPER TO SAVE PICKLIST TO FIREBASE
+  const updateFirebasePicklist = async (newOrder, newCategories) => {
+    if (!db || !isOnline || !resolvedEvent) return;
+    try {
+      await setDoc(doc(db, 'event_picklists', resolvedEvent), {
+        order: newOrder,
+        categories: newCategories,
+        updatedAt: Date.now()
+      }, { merge: true });
+    } catch (e) {
+      console.error("Error syncing picklist", e);
+    }
+  };
+
   const loadAndSyncHistory = async (firestoreDb) => {
     let localData = [];
     try { localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]'); } catch (e) {}
@@ -274,9 +299,7 @@ const HuskyScout = () => {
             remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
         }
-      } catch (e) { 
-        console.warn("Sync failed reading remote records. Check permissions or connection.");
-      }
+      } catch (e) {}
     }
 
     const mergedMap = new Map();
@@ -296,9 +319,7 @@ const HuskyScout = () => {
           await addDoc(collection(firestoreDb, 'scouting_data'), toUpload);
           item.synced = true;
           listUpdated = true;
-        } catch (e) { 
-          break; 
-        }
+        } catch (e) { break; }
       }
       if (listUpdated) {
         const updatedList = mergedList.map(item => ({ ...item }));
@@ -321,7 +342,7 @@ const HuskyScout = () => {
         if (cached) {
           cachedEvents = JSON.parse(cached);
           setEvents(cachedEvents);
-          if (cachedEvents.length > 0) {
+          if (cachedEvents.length > 0 && !selectedEvent) {
             const todayStrLocal = getLocalDateString();
             const activeOrFuture = cachedEvents.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
             setSelectedEvent(activeOrFuture ? activeOrFuture.key : cachedEvents[0].key);
@@ -336,7 +357,6 @@ const HuskyScout = () => {
         if (res.ok) {
           const data = await res.json();
           const todayStrLocal = getLocalDateString();
-          // Allows viewing recent events even if end date passed within the same year
           const filtered = data.filter(ev => ev.year >= CONFIG.YEAR);
           setEvents(filtered);
           localStorage.setItem('husky_scout_events', JSON.stringify(filtered));
@@ -494,7 +514,6 @@ const HuskyScout = () => {
       if (m.alliances?.blue?.teams) m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
     });
     
-    // Add teams that might not be in the match schedule yet but were scouted under this event code
     history.forEach(h => {
       if (h.event === resolvedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
     });
@@ -532,14 +551,22 @@ const HuskyScout = () => {
     const updated = [...picklist];
     const [movedItem] = updated.splice(index, 1);
     updated.splice(newIndex, 0, movedItem);
-    setCustomOrders(prev => ({ ...prev, [resolvedEvent]: updated.map(t => String(t.team).trim()) }));
+    
+    const newOrder = updated.map(t => String(t.team).trim());
+    setCustomOrders(prev => ({ ...prev, [resolvedEvent]: newOrder }));
+    updateFirebasePicklist(newOrder, teamCategories[resolvedEvent] || {});
   };
 
   const toggleCategory = (team, cat) => {
     setTeamCategories(prev => {
       const eventCats = prev[resolvedEvent] || {};
       const newCat = eventCats[team] === cat ? null : cat;
-      return { ...prev, [resolvedEvent]: { ...eventCats, [team]: newCat } };
+      const updatedCats = { ...eventCats, [team]: newCat };
+      
+      const currentOrder = customOrders[resolvedEvent] || picklist.map(t => String(t.team).trim());
+      updateFirebasePicklist(currentOrder, updatedCats);
+      
+      return { ...prev, [resolvedEvent]: updatedCats };
     });
   };
 
@@ -935,7 +962,14 @@ const HuskyScout = () => {
               <div style={{ ...styles.card, border: `1px solid #F59E0B`, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div><span style={{ fontSize: '13px', fontWeight: 'bold', color: '#F59E0B', display: 'block' }}>PREVIEWING SUGGESTED AI PICKS</span><span style={{ fontSize: '11px', color: theme.muted }}>Review recommendations below. Click Approve to save.</span></div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <button onClick={() => { setCustomOrders(prev => ({ ...prev, [resolvedEvent]: aiRecommendedOrder })); setTeamCategories(prev => ({ ...prev, [resolvedEvent]: { ...(prev[resolvedEvent] || {}), ...aiRecommendedCategories } })); setPreviewAiOrder(false); }} style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Approve</button>
+                  <button onClick={() => { 
+                    const newOrder = aiRecommendedOrder;
+                    const newCats = { ...(teamCategories[resolvedEvent] || {}), ...aiRecommendedCategories };
+                    setCustomOrders(prev => ({ ...prev, [resolvedEvent]: newOrder })); 
+                    setTeamCategories(prev => ({ ...prev, [resolvedEvent]: newCats })); 
+                    updateFirebasePicklist(newOrder, newCats);
+                    setPreviewAiOrder(false); 
+                  }} style={{ padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.green, color: '#052e16', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Approve</button>
                   <button onClick={() => { setPreviewAiOrder(false); setAiRecommendedOrder([]); setAiRecommendedCategories({}); }} style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${theme.border}`, backgroundColor: 'transparent', color: 'white', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>Discard</button>
                 </div>
               </div>
