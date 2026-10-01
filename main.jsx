@@ -171,9 +171,6 @@ const HuskyScout = () => {
   const appMode = useMemo(() => {
     if (manualEventMode) return 'active';
     if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) return 'test';
-    
-    if (todayStr > activeEventDetails.end_date) return 'active';
-
     const getDaysDifference = (dateStr1, dateStr2) => {
       const d1 = new Date(dateStr1 + 'T00:00:00');
       const d2 = new Date(dateStr2 + 'T00:00:00');
@@ -183,9 +180,10 @@ const HuskyScout = () => {
     
     if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) return 'active';
     else if (daysToStart > 0 && daysToStart <= 7) return 'preevent';
-    return 'test';
+    return 'test'; // Past events and far future events are test mode (data auto-deletes daily)
   }, [activeEventDetails, todayStr, manualEventMode]);
 
+  // FIX: Force everything to use the actual event key, even in test mode.
   const resolvedEvent = useMemo(() => {
     return String(selectedEvent || '').trim();
   }, [selectedEvent]);
@@ -285,6 +283,8 @@ const HuskyScout = () => {
   const loadAndSyncHistory = async (firestoreDb) => {
     let localData = [];
     try { localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]'); } catch (e) {}
+    
+    // Test mode automatic daily deletion (Local)
     localData = localData.filter(item => !(item.isTest && item.dateString && item.dateString !== todayStr));
 
     let remoteData = [];
@@ -293,13 +293,17 @@ const HuskyScout = () => {
         const querySnapshot = await getDocs(collection(firestoreDb, 'scouting_data'));
         for (const docSnap of querySnapshot.docs) {
           const docData = docSnap.data();
+          
+          // Test mode automatic daily deletion (Remote/Firebase)
           if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
             try { await deleteDoc(doc(firestoreDb, 'scouting_data', docSnap.id)); } catch (err) {}
           } else {
             remoteData.push({ ...docData, firestoreId: docSnap.id });
           }
         }
-      } catch (e) {}
+      } catch (e) { 
+        console.warn("Sync failed reading remote records. Check permissions or connection.");
+      }
     }
 
     const mergedMap = new Map();
@@ -513,10 +517,14 @@ const HuskyScout = () => {
       if (m.alliances?.red?.teams) m.alliances.red.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
       if (m.alliances?.blue?.teams) m.alliances.blue.teams.forEach(t => uniqueTeams.add(String(t.replace(/^frc/, '')).trim()));
     });
-    
     history.forEach(h => {
       if (h.event === resolvedEvent && h.data?.team) uniqueTeams.add(String(h.data.team).trim());
     });
+    
+    // Ensure teams that are uniquely in a remote picklist order aren't skipped
+    if (customOrders[resolvedEvent]) {
+      customOrders[resolvedEvent].forEach(t => uniqueTeams.add(String(t).trim()));
+    }
     
     const allTeams = Array.from(uniqueTeams);
 
