@@ -44,6 +44,12 @@ const getLocalDateString = () => {
   return `${year}-${month}-${day}`;
 };
 
+const getDaysDifference = (dateStr1, dateStr2) => {
+  const d1 = new Date(dateStr1 + 'T00:00:00');
+  const d2 = new Date(dateStr2 + 'T00:00:00');
+  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
+};
+
 const calculateScore = (auto, teleop, climb) => {
   return (Number(auto) * 2) + Number(teleop) + (climb ? 5 : 0);
 };
@@ -171,21 +177,18 @@ const HuskyScout = () => {
   const appMode = useMemo(() => {
     if (manualEventMode) return 'active';
     if (!activeEventDetails || !activeEventDetails.start_date || !activeEventDetails.end_date) return 'test';
-    const getDaysDifference = (dateStr1, dateStr2) => {
-      const d1 = new Date(dateStr1 + 'T00:00:00');
-      const d2 = new Date(dateStr2 + 'T00:00:00');
-      return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
-    };
+    if (todayStr > activeEventDetails.end_date) return 'active'; // Allow viewing past events
+
     const daysToStart = getDaysDifference(activeEventDetails.start_date, todayStr);
     
     if (todayStr >= activeEventDetails.start_date && todayStr <= activeEventDetails.end_date) return 'active';
     else if (daysToStart > 0 && daysToStart <= 7) return 'preevent';
-    return 'test'; // Past events and far future events are test mode (data auto-deletes daily)
+    return 'test'; // Far future events are test mode (data auto-deletes daily)
   }, [activeEventDetails, todayStr, manualEventMode]);
 
-  // FIX: Force everything to use the actual event key, even in test mode.
+  // Forces empty events strictly to "test_event" so they bucket cleanly
   const resolvedEvent = useMemo(() => {
-    return String(selectedEvent || '').trim();
+    return String(selectedEvent || 'test_event').trim();
   }, [selectedEvent]);
 
   const unsyncedCount = useMemo(() => {
@@ -253,7 +256,7 @@ const HuskyScout = () => {
     initFirebase();
   }, [isOnline]);
 
-  // REAL-TIME FIREBASE PICKLIST LISTENER
+  // 1. REAL-TIME EVENT PICKLIST LISTENER (For Drag & Drop syncing across devices)
   useEffect(() => {
     if (!db || !resolvedEvent) return;
     const unsub = onSnapshot(doc(db, 'event_picklists', resolvedEvent), (docSnap) => {
@@ -266,7 +269,6 @@ const HuskyScout = () => {
     return () => unsub();
   }, [db, resolvedEvent]);
 
-  // HELPER TO SAVE PICKLIST TO FIREBASE
   const updateFirebasePicklist = async (newOrder, newCategories) => {
     if (!db || !isOnline || !resolvedEvent) return;
     try {
@@ -280,77 +282,106 @@ const HuskyScout = () => {
     }
   };
 
-  const loadAndSyncHistory = async (firestoreDb) => {
+  // 2. REAL-TIME SCOUTING DATA LISTENER (For live stat updates without refreshing)
+  useEffect(() => {
+    if (!db) return;
+    const q = collection(db, 'scouting_data');
+    const unsub = onSnapshot(q, (snapshot) => {
+      const remoteData = [];
+      snapshot.forEach(docSnap => {
+        remoteData.push({ ...docSnap.data(), firestoreId: docSnap.id, synced: true });
+      });
+
+      setHistory(prevLocalHistory => {
+        const unsyncedLocal = prevLocalHistory.filter(item => !item.synced);
+        const mergedMap = new Map();
+        
+        // Populate remote
+        remoteData.forEach(item => mergedMap.set(String(item.id), item));
+        // Unsynced overrides/appends
+        unsyncedLocal.forEach(item => mergedMap.set(String(item.id), item));
+
+        const mergedList = Array.from(mergedMap.values()).sort((a, b) => (a.id || 0) - (b.id || 0));
+        localStorage.setItem('husky_scout_history', JSON.stringify(mergedList));
+        return mergedList;
+      });
+    }, (error) => {
+      console.warn("Real-time scouting listener permission denied. Check Rules.", error);
+    });
+
+    return () => unsub();
+  }, [db]);
+
+  // 3. BACKGROUND OFFLINE-TO-ONLINE SYNCER & TEST DATA DELETION
+  const pushUnsyncedDataAndClearTest = async () => {
+    if (!db || !isOnline) return;
     let localData = [];
     try { localData = JSON.parse(localStorage.getItem('husky_scout_history') || '[]'); } catch (e) {}
     
-    // Test mode automatic daily deletion (Local)
+    // Purge local test data from yesterday
     localData = localData.filter(item => !(item.isTest && item.dateString && item.dateString !== todayStr));
 
-    let remoteData = [];
-    if (firestoreDb && isOnline) {
+    const unsynced = localData.filter(item => !item.synced);
+    let updatedLocalData = [...localData];
+    let pushedAny = false;
+
+    // Push pending documents
+    for (const item of unsynced) {
       try {
-        const querySnapshot = await getDocs(collection(firestoreDb, 'scouting_data'));
-        for (const docSnap of querySnapshot.docs) {
-          const docData = docSnap.data();
-          
-          // Test mode automatic daily deletion (Remote/Firebase)
-          if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
-            try { await deleteDoc(doc(firestoreDb, 'scouting_data', docSnap.id)); } catch (err) {}
-          } else {
-            remoteData.push({ ...docData, firestoreId: docSnap.id });
-          }
-        }
-      } catch (e) { 
-        console.warn("Sync failed reading remote records. Check permissions or connection.");
-      }
+        const { synced, firestoreId, ...toUpload } = item;
+        await addDoc(collection(db, 'scouting_data'), toUpload);
+        item.synced = true;
+        pushedAny = true;
+      } catch (e) { break; }
     }
-
-    const mergedMap = new Map();
-    localData.forEach(item => mergedMap.set(String(item.id), item));
-    remoteData.forEach(item => mergedMap.set(String(item.id), { ...item, synced: true }));
-
-    const mergedList = Array.from(mergedMap.values()).sort((a, b) => (a.id || 0) - (b.id || 0));
-    setHistory(mergedList);
-    localStorage.setItem('husky_scout_history', JSON.stringify(mergedList));
-
-    if (firestoreDb && isOnline) {
-      const unsynced = mergedList.filter(item => !item.synced);
-      let listUpdated = false;
-      for (const item of unsynced) {
-        try {
-          const { synced, firestoreId, ...toUpload } = item;
-          await addDoc(collection(firestoreDb, 'scouting_data'), toUpload);
-          item.synced = true;
-          listUpdated = true;
-        } catch (e) { break; }
+    
+    // Remote Cleanup: Automatically delete expired test data from Firebase
+    try {
+      const querySnapshot = await getDocs(collection(db, 'scouting_data'));
+      for (const docSnap of querySnapshot.docs) {
+        const docData = docSnap.data();
+        if (docData.isTest && docData.dateString && docData.dateString !== todayStr) {
+          try { await deleteDoc(doc(db, 'scouting_data', docSnap.id)); } catch (err) {}
+        }
       }
-      if (listUpdated) {
-        const updatedList = mergedList.map(item => ({ ...item }));
-        setHistory(updatedList);
-        localStorage.setItem('husky_scout_history', JSON.stringify(updatedList));
-      }
+    } catch (e) {}
+    
+    if (pushedAny || localData.length !== updatedLocalData.length) {
+      localStorage.setItem('husky_scout_history', JSON.stringify(updatedLocalData));
+      setHistory(updatedLocalData);
     }
   };
 
   useEffect(() => {
-    loadAndSyncHistory(db);
-  }, [db, todayStr, isOnline]);
+    pushUnsyncedDataAndClearTest();
+  }, [db, isOnline, todayStr]);
 
+  // AUTOMATICALLY PICK EVENT (ONLY IF ACTIVE)
   useEffect(() => {
     if (!currentUser) return;
     const fetchTBA = async () => {
-      let cachedEvents = [];
+      const todayStrLocal = getLocalDateString();
+      
+      const setAppropriateDefaultEvent = (eventsList) => {
+        setSelectedEvent(current => {
+          if (current) return current; // Keep manual override if present
+          const activeOrFuture = eventsList.find(ev => {
+            if (!ev.start_date || !ev.end_date) return false;
+            const daysToStart = getDaysDifference(ev.start_date, todayStrLocal);
+            // ONLY auto-select if it is happening now or strictly within 7 days
+            return (todayStrLocal >= ev.start_date && todayStrLocal <= ev.end_date) || (daysToStart > 0 && daysToStart <= 7);
+          });
+          // Return the key, or empty string (which forces 'test_event' fallback)
+          return activeOrFuture ? activeOrFuture.key : '';
+        });
+      };
+
       try {
         const cached = localStorage.getItem('husky_scout_events');
         if (cached) {
-          cachedEvents = JSON.parse(cached);
+          const cachedEvents = JSON.parse(cached);
           setEvents(cachedEvents);
-          if (cachedEvents.length > 0 && !selectedEvent) {
-            const todayStrLocal = getLocalDateString();
-            const activeOrFuture = cachedEvents.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
-            setSelectedEvent(activeOrFuture ? activeOrFuture.key : cachedEvents[0].key);
-          }
+          if (cachedEvents.length > 0) setAppropriateDefaultEvent(cachedEvents);
         }
       } catch (e) {}
 
@@ -360,14 +391,10 @@ const HuskyScout = () => {
         const res = await fetch('/.netlify/functions/get-events');
         if (res.ok) {
           const data = await res.json();
-          const todayStrLocal = getLocalDateString();
           const filtered = data.filter(ev => ev.year >= CONFIG.YEAR);
           setEvents(filtered);
           localStorage.setItem('husky_scout_events', JSON.stringify(filtered));
-          if (filtered.length > 0 && !selectedEvent) {
-            const activeOrFuture = filtered.find(ev => !ev.end_date || ev.end_date >= todayStrLocal);
-            setSelectedEvent(activeOrFuture ? activeOrFuture.key : filtered[0].key);
-          }
+          if (filtered.length > 0) setAppropriateDefaultEvent(filtered);
         }
       } catch (e) { console.error(e); }
     };
@@ -553,7 +580,7 @@ const HuskyScout = () => {
     }
   }, [resolvedEvent, history, matches, customOrders, previewAiOrder, aiRecommendedOrder, showDefaultStats]);
 
-  const moveTeam = (index, direction) => {
+  const moveTeam = async (index, direction) => {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= picklist.length) return;
     const updated = [...picklist];
@@ -562,7 +589,7 @@ const HuskyScout = () => {
     
     const newOrder = updated.map(t => String(t.team).trim());
     setCustomOrders(prev => ({ ...prev, [resolvedEvent]: newOrder }));
-    updateFirebasePicklist(newOrder, teamCategories[resolvedEvent] || {});
+    await updateFirebasePicklist(newOrder, teamCategories[resolvedEvent] || {});
   };
 
   const toggleCategory = (team, cat) => {
@@ -817,7 +844,7 @@ const HuskyScout = () => {
           <div style={{ ...styles.card, border: '1px solid #F59E0B', textAlign: 'center', padding: '12px', marginBottom: '16px' }}>
             <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#F59E0B' }}>{unsyncedCount} DATA SAVED ON DEVICE</span>
             {isOnline && db && (
-              <button onClick={() => loadAndSyncHistory(db)} style={{ ...styles.btn, marginTop: '8px', padding: '10px', fontSize: '12px', backgroundColor: '#F59E0B', color: 'black' }}>
+              <button onClick={pushUnsyncedDataAndClearTest} style={{ ...styles.btn, marginTop: '8px', padding: '10px', fontSize: '12px', backgroundColor: '#F59E0B', color: 'black' }}>
                 SYNC DATA NOW
               </button>
             )}
@@ -1073,7 +1100,7 @@ const HuskyScout = () => {
                 </div>
                 <div><label style={{ fontSize: '10px', color: theme.muted }}>Info</label><textarea style={{ ...styles.input, height: '60px', resize: 'none' }} value={ourInfo} onChange={e => setOurInfo(e.target.value)} /></div>
               </div>
-              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>{loadingAi ? 'Analyzing (Background Job)...' : 'Generate Suggestions'}</button>
+              <button onClick={runRemoteAiAnalysis} disabled={loadingAi} style={{ ...styles.btn, backgroundColor: '#8B5CF6', color: 'white' }}>{loadingAi ? 'Loading' : 'Generate Suggestions'}</button>
               {aiError && <div style={{ color: '#EF4444', fontSize: '12px', marginTop: '10px', fontWeight: 'bold' }}>{aiError}</div>}
               {aiSuggestions && (
                 <div style={{ marginTop: '15px', padding: '12px', backgroundColor: '#0F172A', borderRadius: '10px', border: `1px solid ${theme.border}`, maxHeight: '300px', overflowY: 'auto' }}>
@@ -1118,7 +1145,7 @@ const HuskyScout = () => {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px' }}><button onClick={() => setView('menu')} style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer' }}>← Back</button><span style={{ fontWeight: 'bold', color: theme.green }}>ARCHIVE</span></div>
             {scoutedEventsInHistory.length === 0 ? <div style={{ ...styles.card, textAlign: 'center', color: theme.muted }}>No records yet.</div> : scoutedEventsInHistory.map(eventKey => {
-              const eventName = events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase();
+              const eventName = eventKey === 'test_event' ? 'TEST MODE' : (events.find(e => e.key === eventKey)?.name || eventKey.toUpperCase());
               const eventRecords = history.filter(h => h.event === eventKey);
               const matchRecords = eventRecords.filter(h => h.type === 'match');
               const pitRecords = eventRecords.filter(h => h.type === 'pit');
