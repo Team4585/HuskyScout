@@ -57,8 +57,7 @@ You MUST return your response in a valid JSON object with EXACTLY the following 
         'X-Title': 'HuskyScout'
       },
       body: JSON.stringify({
-        // FIX 2: Switched from the random 'openrouter/free' to a specific Llama 3 free model that is much smarter and has less restrictive false-positive filters.
-        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' } 
       })
